@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { formatAuditLine, appendAndTrim, type AuditEntry } from '../hooks/lib/audit'
+import { formatAuditLine, appendAndTrim, createSerialQueue, type AuditEntry } from '../hooks/lib/audit'
 
 const sampleEntry: AuditEntry = { ts: 1700000000000, session: 'abc123', event: 'screen', tool: 'fetch:WebFetch', decision: 'escalate', reason: 'scored 0.60 on the injection question' }
 
@@ -46,4 +46,41 @@ test('never includes a secret value field: only categories/counts belong in reas
   const line = formatAuditLine(entry)
   expect(line).not.toContain('AKIA')
   expect(line).not.toContain('sk-')
+})
+
+test('serialized overlapping read-modify-write appends keep every row', async () => {
+  let file = ''
+  const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+  const append = (event: string) => async () => {
+    const existing = file
+    await tick()
+    file = appendAndTrim(existing, { ...sampleEntry, event }, 100)
+  }
+  const enqueue = createSerialQueue()
+  await Promise.all([enqueue(append('first')), enqueue(append('second'))])
+  expect(file.trim().split('\n').map((line) => JSON.parse(line).event)).toEqual(['first', 'second'])
+})
+
+test('unserialized overlapping read-modify-write appends lose a row', async () => {
+  let file = ''
+  const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+  const append = async (event: string) => {
+    const existing = file
+    await tick()
+    file = appendAndTrim(existing, { ...sampleEntry, event }, 100)
+  }
+  await Promise.all([append('first'), append('second')])
+  expect(file.trim().split('\n').length).toBe(1)
+})
+
+test('a failing task does not stop later queued tasks', async () => {
+  const enqueue = createSerialQueue()
+  const ran: string[] = []
+  void enqueue(async () => {
+    throw new Error('disk full')
+  })
+  await enqueue(async () => {
+    ran.push('after')
+  })
+  expect(ran).toEqual(['after'])
 })

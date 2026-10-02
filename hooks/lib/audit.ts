@@ -38,3 +38,14 @@ export function appendAndTrim(existingJsonl: string, entry: AuditEntry, maxLines
   const trimmed = kept.length > maxLines ? kept.slice(kept.length - maxLines) : kept
   return trimmed.join('\n') + '\n'
 }
+
+// Runs queued tasks strictly one after another, so overlapping audit writes
+// (each a read-modify-write of the whole file) can't clobber each other. A
+// task that throws or rejects doesn't break the chain for the next one.
+export function createSerialQueue(): (task: () => Promise<void>) => Promise<void> {
+  let tail: Promise<void> = Promise.resolve()
+  return (task) => {
+    tail = tail.then(task).catch(() => {})
+    return tail
+  }
+}

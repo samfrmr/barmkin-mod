@@ -38,7 +38,7 @@ import { neutralizeDescription, parseMcpServerName, isAllowedServer } from './li
 import { parseSemgrepJson, formatFindingsContext, worstSeverity, buildSemgrepCandidates } from './lib/sast'
 import { extractResultText, appendContext, withholdResult } from './lib/tool-result'
 import { meetsMinimumVersion, MIN_CLAUDE_CODE_VERSION } from './lib/version'
-import { appendAndTrim, type AuditEntry } from './lib/audit'
+import { appendAndTrim, createSerialQueue, type AuditEntry } from './lib/audit'
 import { scrubAndRedactContent } from './lib/session-append'
 import { checkPosture } from './lib/posture'
 
@@ -197,30 +197,31 @@ async function callJevSystemOne(
 // showed only keeps the single most recent verdict -- F11). Best-effort and
 // never a gate: a write failure here never denies or delays a tool call: the
 // log is a record of decisions already made elsewhere, not a decision point
-// of its own, so there's nothing for a `.catch` to hold here.
+// of its own, so there's nothing for a `.catch` to hold here. Callers never
+// await it: the write is queued behind any earlier one and runs off the
+// calling hook's budget, and it's skipped entirely until session.start's
+// home-directory probe has finished, so no guard ever waits on that probe.
 // ---------------------------------------------------------------------------
 
-async function auditLogPath($: any): Promise<string | null> {
-  const home = await resolveHomeDir($)
-  return home ? home + '/.claude/barmkin-mod-audit.jsonl' : null
+const enqueueAuditWrite = createSerialQueue()
+
+function appendAudit($: any, entry: Omit<AuditEntry, 'ts' | 'session'>): void {
+  if (!probedHomeDir) return
+  const path = probedHomeDir + '/.claude/barmkin-mod-audit.jsonl'
+  const row = { ts: Date.now(), ...entry }
+  void enqueueAuditWrite(() => writeAuditRow($, path, row))
 }
 
-async function appendAudit($: any, entry: Omit<AuditEntry, 'ts' | 'session'>): Promise<void> {
+async function writeAuditRow($: any, path: string, row: Omit<AuditEntry, 'session'>): Promise<void> {
+  const session = await $.session.id()
+  const full: AuditEntry = { ...row, session }
+  let existing = ''
   try {
-    const path = await auditLogPath($)
-    if (!path) return
-    const session = await $.session.id()
-    const full: AuditEntry = { ts: Date.now(), session, ...entry }
-    let existing = ''
-    try {
-      existing = await $.fs.read(path)
-    } catch {
-      existing = ''
-    }
-    await $.fs.write(path, appendAndTrim(existing, full, MAX_AUDIT_LINES))
+    existing = await $.fs.read(path)
   } catch {
-    // best-effort only; see header comment
+    existing = ''
   }
+  await $.fs.write(path, appendAndTrim(existing, full, MAX_AUDIT_LINES))
 }
 
 // Shared by every R7 call site (the outermost redaction pass, tool.describe,
@@ -234,7 +235,7 @@ async function taintForScrub($: any, hiddenCount: number, source: string): Promi
     taintReason,
     () => 'stripped ' + hiddenCount + ' invisible character(s) from ' + source,
   )
-  await appendAudit($, {
+  appendAudit($, {
     event: 'scrub',
     tool: source,
     decision: 'taint',
@@ -302,7 +303,7 @@ async function screenContent(
     await update($, taintReason, () => composed.reason)
   }
 
-  await appendAudit($, { event: 'screen', tool: label, decision: composed.decision, reason: composed.reason })
+  appendAudit($, { event: 'screen', tool: label, decision: composed.decision, reason: composed.reason })
 
   if (toolUseId) {
     try {
@@ -324,6 +325,7 @@ async function screenContent(
 
 async function sessionStartHook($: any, e: any, next: any) {
   const statusLines: string[] = []
+  void resolveHomeDir($)
 
   try {
     const version = await $.session.version()
@@ -397,7 +399,7 @@ async function mcpGuardHook($: any, e: any, next: any) {
   if (serverName) {
     const allowlist = parseAllowlist(pluginOptions.mcp_server_allowlist)
     if (!isAllowedServer(serverName, allowlist)) {
-      await appendAudit($, { event: 'mcp-allowlist', tool: e.tool, decision: 'deny', reason: 'server not on allowlist' })
+      appendAudit($, { event: 'mcp-allowlist', tool: e.tool, decision: 'deny', reason: 'server not on allowlist' })
       return { deny: 'barmkin-mod: MCP server "' + serverName + '" is not on the allowlist' }
     }
   }
@@ -427,7 +429,7 @@ async function outwardEffectGuardHook($: any, e: any, next: any) {
   const isTainted = await read($, tainted)
   if (isTainted && typeof e.command === 'string' && isOutwardEffectCommand(e.command)) {
     const reason = await read($, taintReason)
-    await appendAudit($, { event: 'outward-effect', tool: 'Bash', decision: 'deny', reason: reason ?? 'unspecified' })
+    appendAudit($, { event: 'outward-effect', tool: 'Bash', decision: 'deny', reason: reason ?? 'unspecified' })
     return {
       deny:
         'barmkin-mod: this session is handling untrusted content (' +
@@ -680,7 +682,7 @@ async function sessionReceiveCatch($: any, e: any, next: any) {
 async function sessionSendHook($: any, e: any, next: any) {
   if (typeof e.text !== 'string') return next(e)
   if (containsAnySecret(e.text, REDACTION_RULES)) {
-    await appendAudit($, { event: 'session-send-dlp', tool: 'session.send', decision: 'deny', reason: 'message appears to contain a secret' })
+    appendAudit($, { event: 'session-send-dlp', tool: 'session.send', decision: 'deny', reason: 'message appears to contain a secret' })
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it appears to contain a secret' }
   }
   return next(e)
@@ -694,7 +696,7 @@ async function agentSpawnHook($: any, e: any, next: any) {
   const isTainted = await read($, tainted)
   if (isTainted) {
     const reason = await read($, taintReason)
-    await appendAudit($, { event: 'agent-spawn', tool: 'agent.spawn', decision: 'deny', reason: reason ?? 'unspecified' })
+    appendAudit($, { event: 'agent-spawn', tool: 'agent.spawn', decision: 'deny', reason: reason ?? 'unspecified' })
     return {
       deny:
         'barmkin-mod: subagent spawn blocked while this session is tainted (' +
