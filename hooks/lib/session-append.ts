@@ -8,7 +8,7 @@ import { scrubInvisible } from './scrub'
 export interface BlockResult {
   block: unknown
   changed: boolean
-  strippedCount: number
+  hiddenCount: number
 }
 
 // Rewrites a text block's `text`, or a tool_result block's `content` (a
@@ -24,51 +24,51 @@ export function scrubAndRedactBlock(
   rules: RedactionRule[],
   counters: Record<string, number>,
 ): BlockResult {
-  if (!block || typeof block !== 'object') return { block, changed: false, strippedCount: 0 }
+  if (!block || typeof block !== 'object') return { block, changed: false, hiddenCount: 0 }
   const b = block as Record<string, unknown>
 
   if (b.type === 'text' && typeof b.text === 'string') {
     const scrubbed = scrubInvisible(b.text)
     const { text: redacted, redactedCount } = redactText(scrubbed.text, rules, counters)
-    if (redactedCount === 0 && scrubbed.strippedCount === 0) return { block, changed: false, strippedCount: 0 }
-    return { block: { ...b, text: redacted }, changed: true, strippedCount: scrubbed.strippedCount }
+    if (redactedCount === 0 && scrubbed.strippedCount === 0) return { block, changed: false, hiddenCount: 0 }
+    return { block: { ...b, text: redacted }, changed: true, hiddenCount: scrubbed.hiddenCount }
   }
 
   if (b.type === 'tool_result') {
     if (typeof b.content === 'string') {
       const scrubbed = scrubInvisible(b.content)
       const { text: redacted, redactedCount } = redactText(scrubbed.text, rules, counters)
-      if (redactedCount === 0 && scrubbed.strippedCount === 0) return { block, changed: false, strippedCount: 0 }
-      return { block: { ...b, content: redacted }, changed: true, strippedCount: scrubbed.strippedCount }
+      if (redactedCount === 0 && scrubbed.strippedCount === 0) return { block, changed: false, hiddenCount: 0 }
+      return { block: { ...b, content: redacted }, changed: true, hiddenCount: scrubbed.hiddenCount }
     }
     if (Array.isArray(b.content)) {
       let changed = false
-      let strippedCount = 0
+      let hiddenCount = 0
       const content = b.content.map((inner) => {
         const res = scrubAndRedactBlock(inner, rules, counters)
         if (res.changed) changed = true
-        strippedCount += res.strippedCount
+        hiddenCount += res.hiddenCount
         return res.block
       })
-      return changed ? { block: { ...b, content }, changed: true, strippedCount } : { block, changed: false, strippedCount: 0 }
+      return changed ? { block: { ...b, content }, changed: true, hiddenCount } : { block, changed: false, hiddenCount: 0 }
     }
   }
 
-  return { block, changed: false, strippedCount: 0 }
+  return { block, changed: false, hiddenCount: 0 }
 }
 
 export function scrubAndRedactContent(
   content: unknown[],
   rules: RedactionRule[],
   counters: Record<string, number>,
-): { content: unknown[]; changed: boolean; strippedCount: number } {
+): { content: unknown[]; changed: boolean; hiddenCount: number } {
   let changed = false
-  let strippedCount = 0
+  let hiddenCount = 0
   const result = content.map((block) => {
     const res = scrubAndRedactBlock(block, rules, counters)
     if (res.changed) changed = true
-    strippedCount += res.strippedCount
+    hiddenCount += res.hiddenCount
     return res.block
   })
-  return { content: result, changed, strippedCount }
+  return { content: result, changed, hiddenCount }
 }

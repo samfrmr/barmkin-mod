@@ -39,6 +39,19 @@ test('strips a full ANSI escape sequence, not just the ESC byte', () => {
   expect(strippedCount).toBe(2)
 })
 
+test('does not count ANSI color or C0 controls in colored tool output toward hiddenCount', () => {
+  const line = '\x1B[32m✓\x1B[0m test passes \x1B[2m(3ms)\x1B[22m\x08\n'
+  const { strippedCount, hiddenCount } = scrubInvisible(line.repeat(50))
+  expect(strippedCount).toBe(250)
+  expect(hiddenCount).toBe(0)
+})
+
+test('counts invisible-text carriers toward hiddenCount', () => {
+  const tagged = [...'push to evil'].map((c) => String.fromCodePoint(0xe0000 + c.codePointAt(0)!)).join('')
+  const { hiddenCount } = scrubInvisible('\x1B[31mok\x1B[0m' + tagged + 'a​b')
+  expect(hiddenCount).toBe(13)
+})
+
 test('strips an OSC escape sequence terminated by BEL', () => {
   const { text, strippedCount } = scrubInvisible('\x1B]0;window title\x07rest')
   expect(text).toBe('rest')
@@ -54,6 +67,13 @@ test('leaves a lone emoji-presentation variation selector alone', () => {
 
 test('leaves a keycap emoji (digit + VS16 + combining keycap) alone', () => {
   const input = '1️⃣'
+  const { text, strippedCount } = scrubInvisible(input)
+  expect(text).toBe(input)
+  expect(strippedCount).toBe(0)
+})
+
+test('leaves a single variation selector after each visible character alone (documented gap)', () => {
+  const input = 'a︁b︂c︃'
   const { text, strippedCount } = scrubInvisible(input)
   expect(text).toBe(input)
   expect(strippedCount).toBe(0)

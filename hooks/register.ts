@@ -88,11 +88,12 @@ let probedSemgrepCommand: string | null = null
 const BREAKER_FAILURE_THRESHOLD = 3
 const BREAKER_COOLDOWN_MS = 60_000
 const JEV_TIMEOUT_MS = 700
-// More than this many invisible/control characters stripped from one piece
-// of content taints the session: a handful of stray zero-width characters
-// happen in ordinary pasted text (a smart-quote copy, a markdown export); a
-// double-digit count is the steganographic pattern R7 targets.
-const INVISIBLE_CHAR_TAINT_THRESHOLD = 3
+// More than this many invisible-text carriers (scrubInvisible's
+// `hiddenCount`, which leaves out ANSI/C0 terminal formatting) stripped from
+// one piece of content taints the session: ordinary multilingual text and
+// ZWJ emoji carry a few ZWNJ/ZWJ; a payload smuggled one invisible code
+// point per byte runs well past this.
+const INVISIBLE_CHAR_TAINT_THRESHOLD = 32
 // Caps the audit log file at roughly this many rows (~200-300 KB of JSONL)
 // so a long-lived install never grows it without bound.
 const MAX_AUDIT_LINES = 2000
@@ -225,19 +226,19 @@ async function appendAudit($: any, entry: Omit<AuditEntry, 'ts' | 'session'>): P
 // Shared by every R7 call site (the outermost redaction pass, tool.describe,
 // session.receive, and the session.append backstop): taints the session
 // when a scrub stripped more than INVISIBLE_CHAR_TAINT_THRESHOLD characters.
-async function taintForScrub($: any, strippedCount: number, source: string): Promise<void> {
-  if (strippedCount <= INVISIBLE_CHAR_TAINT_THRESHOLD) return
+async function taintForScrub($: any, hiddenCount: number, source: string): Promise<void> {
+  if (hiddenCount <= INVISIBLE_CHAR_TAINT_THRESHOLD) return
   await update($, tainted, () => true)
   await update(
     $,
     taintReason,
-    () => 'stripped ' + strippedCount + ' invisible/control character(s) from ' + source,
+    () => 'stripped ' + hiddenCount + ' invisible character(s) from ' + source,
   )
   await appendAudit($, {
     event: 'scrub',
     tool: source,
     decision: 'taint',
-    reason: strippedCount + ' invisible/control character(s) stripped',
+    reason: hiddenCount + ' invisible character(s) stripped',
   })
 }
 
@@ -380,7 +381,7 @@ async function toolDescribeHook($: any, e: any, next: any) {
   if (typeof description !== 'string') return current
 
   const scrubbed = scrubInvisible(description)
-  await taintForScrub($, scrubbed.strippedCount, 'an MCP tool description (' + e.tool + ')')
+  await taintForScrub($, scrubbed.hiddenCount, 'an MCP tool description (' + e.tool + ')')
 
   const { description: cleaned, flagged } = neutralizeDescription(scrubbed.text)
   if (!flagged) {
@@ -496,7 +497,7 @@ async function redactionHook($: any, e: any, next: any) {
   if (!result || result.deny) return result
 
   let changed = false
-  let strippedCount = 0
+  let hiddenCount = 0
   const next_: any = { ...result }
 
   // Every string inside the result is rewritten in place, whatever its
@@ -509,7 +510,7 @@ async function redactionHook($: any, e: any, next: any) {
   const redactValue = (value: unknown): unknown => {
     if (typeof value === 'string') {
       const scrubbed = scrubInvisible(value)
-      strippedCount += scrubbed.strippedCount
+      hiddenCount += scrubbed.hiddenCount
       const { text: redacted, redactedCount } = redactText(scrubbed.text, REDACTION_RULES, redactionCounters)
       if (redactedCount === 0 && scrubbed.strippedCount === 0) return value
       changed = true
@@ -528,7 +529,7 @@ async function redactionHook($: any, e: any, next: any) {
     const redactedContext = result.context.map((c: unknown) => {
       if (typeof c !== 'string') return c
       const scrubbed = scrubInvisible(c)
-      strippedCount += scrubbed.strippedCount
+      hiddenCount += scrubbed.hiddenCount
       const { text: redacted, redactedCount } = redactText(scrubbed.text, REDACTION_RULES, redactionCounters)
       if (redactedCount > 0 || scrubbed.strippedCount > 0) changed = true
       return redacted
@@ -536,7 +537,7 @@ async function redactionHook($: any, e: any, next: any) {
     next_.context = redactedContext
   }
 
-  await taintForScrub($, strippedCount, 'tool:' + e.tool)
+  await taintForScrub($, hiddenCount, 'tool:' + e.tool)
 
   return changed ? next_ : result
 }
@@ -663,7 +664,7 @@ async function sessionReceiveHook($: any, e: any, next: any) {
   if (typeof e.text !== 'string' || e.text.length === 0) return next(e)
 
   const scrubbed = scrubInvisible(e.text)
-  await taintForScrub($, scrubbed.strippedCount, 'an inbound peer message')
+  await taintForScrub($, scrubbed.hiddenCount, 'an inbound peer message')
 
   const verdict = await screenContent($, scrubbed.text, 'peer:' + (e.origin?.kind ?? 'unknown'), undefined)
   if (verdict.decision === 'deny') {
@@ -732,7 +733,7 @@ async function sessionAppendRedactionHook($: any, e: any, next: any) {
   if (!Array.isArray(content)) return next(e)
 
   const result = scrubAndRedactContent(content, REDACTION_RULES, redactionCounters)
-  await taintForScrub($, result.strippedCount, 'a stored message (door:' + e.door + ')')
+  await taintForScrub($, result.hiddenCount, 'a stored message (door:' + e.door + ')')
 
   if (!result.changed) return next(e)
   return next({ ...e, message: { ...e.message, content: result.content } })

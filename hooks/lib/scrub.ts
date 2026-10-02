@@ -37,16 +37,24 @@ const ZERO_WIDTH = /[​-‍⁠﻿]/g
 // keycap emoji (`1️⃣`) use exactly one. A *run* of four or more in
 // a row has no such use -- it's the steganographic encoding some
 // invisible-prompt-injection demos use (one selector per smuggled byte) --
-// so only runs at or above that length are stripped.
+// so only runs at or above that length are stripped. Known gap: a single
+// selector after each visible character (one smuggled byte per character,
+// every run only one long) stays under this threshold and is not stripped.
 const VARIATION_SELECTOR_RUN = /[︀-️\u{E0100}-\u{E01EF}]{4,}/gu
 
+// `strippedCount` counts everything removed. `hiddenCount` leaves out ANSI
+// escapes and C0/C1 controls: terminal formatting in colored tool output is
+// routine, so only the invisible-text carriers (tags, bidi, zero-width,
+// variation-selector runs) count toward the steganographic signal.
 export interface ScrubResult {
   text: string
   strippedCount: number
+  hiddenCount: number
 }
 
 export function scrubInvisible(text: string): ScrubResult {
   let strippedCount = 0
+  let hiddenCount = 0
   const hasLeadingBom = text.startsWith('﻿')
   let body = hasLeadingBom ? text.slice(1) : text
 
@@ -56,10 +64,12 @@ export function scrubInvisible(text: string): ScrubResult {
   })
   body = body.replace(TAG_BLOCK, () => {
     strippedCount++
+    hiddenCount++
     return ''
   })
   body = body.replace(BIDI_CONTROLS, () => {
     strippedCount++
+    hiddenCount++
     return ''
   })
   body = body.replace(C0_C1_CONTROLS, () => {
@@ -68,12 +78,14 @@ export function scrubInvisible(text: string): ScrubResult {
   })
   body = body.replace(ZERO_WIDTH, () => {
     strippedCount++
+    hiddenCount++
     return ''
   })
   body = body.replace(VARIATION_SELECTOR_RUN, (run) => {
     strippedCount += [...run].length
+    hiddenCount += [...run].length
     return ''
   })
 
-  return { text: hasLeadingBom ? '﻿' + body : body, strippedCount }
+  return { text: hasLeadingBom ? '﻿' + body : body, strippedCount, hiddenCount }
 }
