@@ -12,6 +12,33 @@ test('redacts a secret from a Bash tool result before Claude reads it', async ($
   expect(out.result).toContain('[REDACTED:aws-key#1]')
 })
 
+test('redacts secrets inside a typed Bash result record and its model-visible text', async ($, on) => {
+  const stdout = 'export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nAPI_KEY=f3b9c0d8a7e6152493ab npm start'
+  on('tool.call', () => ({
+    result: { stdout, stderr: '', interrupted: false, isImage: false, noOutputExpected: false },
+    text: stdout,
+  }))
+  const out = await $.tool.call({ tool: 'Bash', command: 'cat aws-fixture.txt' })
+  expect(Object.keys(out.result).sort()).toEqual(['interrupted', 'isImage', 'noOutputExpected', 'stderr', 'stdout'])
+  expect(out.result.interrupted).toBe(false)
+  expect(out.result.stdout).not.toContain('AKIAIOSFODNN7EXAMPLE')
+  expect(out.result.stdout).not.toContain('f3b9c0d8a7e6152493ab')
+  expect(out.result.stdout).toContain('[REDACTED:aws-key#')
+  expect(out.text).not.toContain('AKIAIOSFODNN7EXAMPLE')
+  expect(out.text).not.toContain('f3b9c0d8a7e6152493ab')
+})
+
+test('redacts secrets inside a nested Read file record', async ($, on) => {
+  const content = 'DB_KEY=Xk9#mP2$vL8@qR4!wN7z\nCACHE_KEY = \'user\'\n'
+  on('tool.call', () => ({ result: { type: 'text', file: { filePath: '/tmp/x/.env', content, numLines: 2 } } }))
+  const out = await $.tool.call({ tool: 'Read', file_path: '/tmp/x/.env' })
+  expect(out.result.type).toBe('text')
+  expect(out.result.file.filePath).toBe('/tmp/x/.env')
+  expect(out.result.file.numLines).toBe(2)
+  expect(out.result.file.content).not.toContain('Xk9#mP2$vL8@qR4!wN7z')
+  expect(out.result.file.content).toContain("CACHE_KEY = 'user'")
+})
+
 test('leaves a clean Bash result untouched', async ($, on) => {
   on('tool.call', () => ({ result: 'total 0\ndrwxr-xr-x  2 user user 4096 file.txt' }))
   const out = await $.tool.call({ tool: 'Bash', command: 'ls -la' })

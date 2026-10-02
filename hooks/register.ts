@@ -396,23 +396,26 @@ async function redactionHook($: any, e: any, next: any) {
   let changed = false
   const next_: any = { ...result }
 
-  // A plain string result and the `text` of each block in a content-block
-  // array (the usual MCP shape) are rewritten in place.
-  if (typeof result.result === 'string') {
-    const { text: redacted, redactedCount } = redactText(result.result, REDACTION_RULES, redactionCounters)
-    if (redactedCount > 0) {
-      next_.result = redacted
+  // Every string inside the result is rewritten in place, whatever its
+  // shape: a plain string, an MCP content-block array, or a built-in tool's
+  // typed record (Bash `{stdout, stderr, ...}`, Read `{file: {content}}`).
+  // The record keeps its shape so core's output-schema validation passes.
+  // Core's model-visible rendering in `text` is redacted the same way.
+  const redactValue = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      const { text: redacted, redactedCount } = redactText(value, REDACTION_RULES, redactionCounters)
+      if (redactedCount === 0) return value
       changed = true
+      return redacted
     }
-  } else if (Array.isArray(result.result)) {
-    next_.result = result.result.map((block: any) => {
-      if (!block || typeof block !== 'object' || typeof block.text !== 'string') return block
-      const { text: redacted, redactedCount } = redactText(block.text, REDACTION_RULES, redactionCounters)
-      if (redactedCount === 0) return block
-      changed = true
-      return { ...block, text: redacted }
-    })
+    if (Array.isArray(value)) return value.map(redactValue)
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redactValue(v)]))
+    }
+    return value
   }
+  if ('result' in result) next_.result = redactValue(result.result)
+  if (typeof result.text === 'string') next_.text = redactValue(result.text)
 
   if (Array.isArray(result.context)) {
     const redactedContext = result.context.map((c: unknown) => {
