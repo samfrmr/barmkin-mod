@@ -41,6 +41,12 @@ declare module 'claude-code' {
           suppressed: boolean
         }
       >
+
+      // True once no candidate semgrep binary (configured path, common
+      // install locations, bare name) could be run this session. Drives the
+      // findings pane's "semgrep not found / not runnable" notice so the
+      // pane doesn't just render empty.
+      semgrepUnavailable: boolean
     }
   }
 }

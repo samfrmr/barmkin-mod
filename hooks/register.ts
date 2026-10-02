@@ -34,8 +34,8 @@ import {
   type SystemOneParseResult,
 } from './lib/system-one-client'
 import { neutralizeDescription, parseMcpServerName, isAllowedServer } from './lib/mcp-guard'
-import { parseSemgrepJson, formatFindingsContext, worstSeverity } from './lib/sast'
-import { extractResultText, appendContext } from './lib/tool-result'
+import { parseSemgrepJson, formatFindingsContext, worstSeverity, buildSemgrepCandidates } from './lib/sast'
+import { extractResultText, appendContext, withholdResult } from './lib/tool-result'
 import { meetsMinimumVersion, MIN_CLAUDE_CODE_VERSION } from './lib/version'
 
 // ---------------------------------------------------------------------------
@@ -67,11 +67,19 @@ const sastFindingsByToolUse = atom(
   { plugin: 'barmkin-mod', key: 'sastFindingsByToolUse' },
   {} as Record<string, SastEntry>,
 )
+const semgrepUnavailable = atom({ plugin: 'barmkin-mod', key: 'semgrepUnavailable' }, false)
 
 // Redaction placeholder counters. Not security state (no secret value is
 // ever kept, only a per-category count for unique labels), so a plain
 // module variable is fine; it resets on reload like any other.
 const redactionCounters: Record<string, number> = {}
+
+// Resolved semgrep command cache. Not security state -- just avoids
+// re-probing the filesystem/PATH on every edit -- so a plain module
+// variable is fine; it resets on reload like any other. `null` means "not
+// probed yet", `''` means "probed, nothing found".
+let probedHomeDir: string | null = null
+let probedSemgrepCommand: string | null = null
 
 const BREAKER_FAILURE_THRESHOLD = 3
 const BREAKER_COOLDOWN_MS = 60_000
@@ -311,7 +319,7 @@ async function mcpGuardHook($: any, e: any, next: any) {
   if (!text) return result
   const verdict = await screenContent($, text, 'mcp:' + (serverName ?? e.tool), e.tool_use_id)
   if (verdict.decision === 'deny') {
-    return { result: 'barmkin-mod: withheld this MCP result (' + verdict.reason + '). Ask the user before retrying.' }
+    return withholdResult(result, 'barmkin-mod: withheld this MCP result (' + verdict.reason + '). Ask the user before retrying.')
   }
   if (verdict.tainted) return appendContext(result, UNTRUSTED_CONTENT_WARNING)
   return result
@@ -350,7 +358,7 @@ async function webFetchTaintHook($: any, e: any, next: any) {
   if (!text) return result
   const verdict = await screenContent($, text, 'fetch:' + e.tool, e.tool_use_id)
   if (verdict.decision === 'deny') {
-    return { result: 'barmkin-mod: withheld this result (' + verdict.reason + '). Ask the user before retrying.' }
+    return withholdResult(result, 'barmkin-mod: withheld this result (' + verdict.reason + '). Ask the user before retrying.')
   }
   if (verdict.tainted) return appendContext(result, UNTRUSTED_CONTENT_WARNING)
   return result
@@ -373,8 +381,12 @@ async function readTaintHook($: any, e: any, next: any) {
   if (!text) return result
   const verdict = await screenContent($, text, 'read:' + e.file_path, e.tool_use_id)
   if (verdict.decision === 'deny') {
-    return { result: "barmkin-mod: withheld this file's content (" + verdict.reason + '). Ask the user before retrying.' }
+    return withholdResult(result, "barmkin-mod: withheld this file's content (" + verdict.reason + '). Ask the user before retrying.')
   }
+  // appendContext only adds a sibling `context` array alongside whatever
+  // `result` already is -- it never touches `result`'s own shape -- so this
+  // stays schema-valid for Read's `{ file: { content, ... } }` record the
+  // same way it already is for every other tool here.
   if (verdict.tainted) return appendContext(result, UNTRUSTED_CONTENT_WARNING)
   return result
 }
@@ -442,6 +454,52 @@ async function redactionCatch($: any, e: any, next: any) {
 // edit (the file is already written by the time this hook's work starts).
 // ---------------------------------------------------------------------------
 
+// `semgrep` resolved by bare name only ever sees whatever PATH the Claude
+// Code process itself started with, which routinely omits a per-user
+// install location (pipx/`pip install --user` under ~/.local/bin) that the
+// operator's own interactive shell sees just fine. `$HOME` isn't otherwise
+// available to a hook, so it's read via a plain (non-login, no profile
+// sourcing, so no stray stdout to confuse this with a failure) `sh -c`
+// probe; `sh` itself is expected to always be on the process's PATH even
+// when `semgrep` isn't. Cached for the session so this only runs once.
+async function resolveHomeDir($: any): Promise<string> {
+  if (probedHomeDir !== null) return probedHomeDir
+  let home = ''
+  try {
+    const proc = await $.process.run(['sh', '-c', 'printf %s "$HOME"'], { timeoutMs: 2000 })
+    home = proc.exitCode === 0 ? proc.stdout.trim() : ''
+  } catch {
+    home = ''
+  }
+  probedHomeDir = home
+  return home
+}
+
+// Resolves and caches a runnable semgrep command for the session: the
+// configured path (re-checked every call, since `/config` can change it
+// without a reload), else the first of `buildSemgrepCandidates` that
+// actually runs, else null if none do. `null` is cached too (as `''`) so a
+// genuinely missing semgrep doesn't re-probe the filesystem on every edit.
+async function resolveSemgrepCommand($: any): Promise<string | null> {
+  const configured = typeof pluginOptions.sast_semgrep_path === 'string' ? pluginOptions.sast_semgrep_path.trim() : ''
+  if (configured) return configured
+
+  if (probedSemgrepCommand !== null) return probedSemgrepCommand || null
+
+  const home = await resolveHomeDir($)
+  for (const candidate of buildSemgrepCandidates(home)) {
+    try {
+      await $.process.run([candidate, '--version'], { timeoutMs: 5000 })
+      probedSemgrepCommand = candidate
+      return candidate
+    } catch {
+      continue
+    }
+  }
+  probedSemgrepCommand = ''
+  return null
+}
+
 async function sastHook($: any, e: any, next: any) {
   const result = await next(e)
   if (!result || result.deny || result.isError) return result
@@ -449,12 +507,20 @@ async function sastHook($: any, e: any, next: any) {
   const filePath = typeof e.file_path === 'string' ? e.file_path : undefined
   if (!filePath) return result
 
+  const command = await resolveSemgrepCommand($)
+  if (!command) {
+    await update($, semgrepUnavailable, () => true)
+    return result
+  }
+
   let proc: { exitCode: number; stdout: string; stderr: string }
   try {
-    proc = await $.process.run(['semgrep', '--config=auto', '--json', '--quiet', filePath], { timeoutMs: 30000 })
+    proc = await $.process.run([command, '--config=auto', '--json', '--quiet', filePath], { timeoutMs: 30000 })
   } catch {
-    return result // semgrep not installed, or it failed to start; stay silent
+    await update($, semgrepUnavailable, () => true)
+    return result // semgrep failed to start even though it ran at probe time; stay silent
   }
+  await update($, semgrepUnavailable, () => false)
   // semgrep exits 1 when findings exist and 0 when clean; anything else is
   // a tool error, not a scan result.
   if (proc.exitCode !== 0 && proc.exitCode !== 1) return result
@@ -548,7 +614,11 @@ async function findingsPaneHook($: any, e: any, next: any) {
   const entries = Object.entries(findingsMap).filter(([, v]) => !(v as SastEntry).suppressed)
 
   if (entries.length === 0) {
-    return Box({ flexDirection: 'column', children: [Text({ children: ['No SAST findings yet this session.'] })] })
+    const unavailable = await read($, semgrepUnavailable)
+    const message = unavailable
+      ? 'barmkin-mod: semgrep not found / not runnable -- SAST findings are unavailable this session.'
+      : 'No SAST findings yet this session.'
+    return Box({ flexDirection: 'column', children: [Text({ children: [message] })] })
   }
 
   const rows = entries.flatMap(([key, entry]) =>

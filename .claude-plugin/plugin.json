@@ -37,6 +37,11 @@
       "title": "Hold on high-severity SAST findings",
       "description": "When a semgrep ERROR-severity finding appears after an edit, ask the user to acknowledge it before the turn continues. When off, findings are advisory only (shown inline and fed to Claude as context).",
       "default": false
+    },
+    "sast_semgrep_path": {
+      "type": "string",
+      "title": "semgrep binary path",
+      "description": "Absolute path to the semgrep binary, for when it isn't resolvable by bare name on the Claude Code process's PATH (e.g. a pipx/`pip install --user` binary under ~/.local/bin). Leave empty to auto-probe common install locations before falling back to bare `semgrep`."
     }
   }
 }

@@ -1,5 +1,5 @@
-// Pure parsing/formatting for the SAST UI. register.ts runs semgrep with
-// $.process.run and hands the raw stdout to parseSemgrepJson.
+// Pure parsing/formatting/resolution for the SAST UI. register.ts runs
+// semgrep with $.process.run and hands the raw stdout to parseSemgrepJson.
 
 export interface SemgrepFinding {
   ruleId: string
@@ -59,3 +59,23 @@ export function formatFindingsContext(findings: SemgrepFinding[]): string {
   return `semgrep found ${findings.length} issue(s) in this edit:\n${lines.join('\n')}`
 }
 
+// Candidate semgrep binaries to try, in order, when the `sast_semgrep_path`
+// option is unset. Plain `semgrep` only resolves through whatever PATH the
+// host process itself was started with, which routinely omits per-user
+// install locations like `~/.local/bin` (pipx/`pip install --user`) even
+// though the user's own interactive shell sees them -- hence `homeDir`
+// first, then common package-manager prefixes, with bare `semgrep` last as
+// the pre-existing fallback.
+export function buildSemgrepCandidates(homeDir: string): string[] {
+  const candidates: string[] = []
+  const home = homeDir.trim().replace(/\/+$/, '')
+  if (home) candidates.push(home + '/.local/bin/semgrep')
+  candidates.push(
+    '/usr/local/bin/semgrep',
+    '/opt/homebrew/bin/semgrep',
+    '/home/linuxbrew/.linuxbrew/bin/semgrep',
+    '/usr/bin/semgrep',
+    'semgrep',
+  )
+  return candidates
+}
