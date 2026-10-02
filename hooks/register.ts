@@ -17,6 +17,7 @@
 import { atom, read, update } from 'claude-code'
 import { REDACTION_RULES } from './lib/redaction-rules'
 import { redactText, containsAnySecret } from './lib/redaction'
+import { scrubInvisible } from './lib/scrub'
 import {
   isOutwardEffectCommand,
   composeScreen,
@@ -37,6 +38,9 @@ import { neutralizeDescription, parseMcpServerName, isAllowedServer } from './li
 import { parseSemgrepJson, formatFindingsContext, worstSeverity, buildSemgrepCandidates } from './lib/sast'
 import { extractResultText, appendContext, withholdResult } from './lib/tool-result'
 import { meetsMinimumVersion, MIN_CLAUDE_CODE_VERSION } from './lib/version'
+import { appendAndTrim, type AuditEntry } from './lib/audit'
+import { scrubAndRedactContent } from './lib/session-append'
+import { checkPosture } from './lib/posture'
 
 // ---------------------------------------------------------------------------
 // $.state atoms. Declared values must match types/index.d.ts, and plugin/key
@@ -84,6 +88,17 @@ let probedSemgrepCommand: string | null = null
 const BREAKER_FAILURE_THRESHOLD = 3
 const BREAKER_COOLDOWN_MS = 60_000
 const JEV_TIMEOUT_MS = 700
+// More than this many invisible/control characters stripped from one piece
+// of content taints the session: a handful of stray zero-width characters
+// happen in ordinary pasted text (a smart-quote copy, a markdown export); a
+// double-digit count is the steganographic pattern R7 targets.
+const INVISIBLE_CHAR_TAINT_THRESHOLD = 3
+// Caps the audit log file at roughly this many rows (~200-300 KB of JSONL)
+// so a long-lived install never grows it without bound.
+const MAX_AUDIT_LINES = 2000
+// This plugin's own manifest name, as it appears before the `@marketplace`
+// suffix in a managed prependPlugins entry (R16's posture check).
+const PLUGIN_NAME = 'barmkin-mod'
 
 let pluginOptions: Record<string, unknown> = {}
 
@@ -175,6 +190,57 @@ async function callJevSystemOne(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Durable audit log (R12): an append-only JSONL file of every notable guard
+// decision this session made, outside $.state (which `lastVerdict` already
+// showed only keeps the single most recent verdict -- F11). Best-effort and
+// never a gate: a write failure here never denies or delays a tool call: the
+// log is a record of decisions already made elsewhere, not a decision point
+// of its own, so there's nothing for a `.catch` to hold here.
+// ---------------------------------------------------------------------------
+
+async function auditLogPath($: any): Promise<string | null> {
+  const home = await resolveHomeDir($)
+  return home ? home + '/.claude/barmkin-mod-audit.jsonl' : null
+}
+
+async function appendAudit($: any, entry: Omit<AuditEntry, 'ts' | 'session'>): Promise<void> {
+  try {
+    const path = await auditLogPath($)
+    if (!path) return
+    const session = await $.session.id()
+    const full: AuditEntry = { ts: Date.now(), session, ...entry }
+    let existing = ''
+    try {
+      existing = await $.fs.read(path)
+    } catch {
+      existing = ''
+    }
+    await $.fs.write(path, appendAndTrim(existing, full, MAX_AUDIT_LINES))
+  } catch {
+    // best-effort only; see header comment
+  }
+}
+
+// Shared by every R7 call site (the outermost redaction pass, tool.describe,
+// session.receive, and the session.append backstop): taints the session
+// when a scrub stripped more than INVISIBLE_CHAR_TAINT_THRESHOLD characters.
+async function taintForScrub($: any, strippedCount: number, source: string): Promise<void> {
+  if (strippedCount <= INVISIBLE_CHAR_TAINT_THRESHOLD) return
+  await update($, tainted, () => true)
+  await update(
+    $,
+    taintReason,
+    () => 'stripped ' + strippedCount + ' invisible/control character(s) from ' + source,
+  )
+  await appendAudit($, {
+    event: 'scrub',
+    tool: source,
+    decision: 'taint',
+    reason: strippedCount + ' invisible/control character(s) stripped',
+  })
+}
+
 async function recordBreakerFailure($: any): Promise<void> {
   const failures = (await read($, breakerFailureCount)) + 1
   await update($, breakerFailureCount, () => failures)
@@ -235,6 +301,8 @@ async function screenContent(
     await update($, taintReason, () => composed.reason)
   }
 
+  await appendAudit($, { event: 'screen', tool: label, decision: composed.decision, reason: composed.reason })
+
   if (toolUseId) {
     try {
       // $.ui.notice's exact id field on a tool.call event is unverified
@@ -254,16 +322,30 @@ async function screenContent(
 // ---------------------------------------------------------------------------
 
 async function sessionStartHook($: any, e: any, next: any) {
+  const statusLines: string[] = []
+
   try {
     const version = await $.session.version()
     if (typeof version === 'string' && !meetsMinimumVersion(version)) {
-      $.ui.status(
+      statusLines.push(
         'barmkin-mod needs Claude Code >= ' + MIN_CLAUDE_CODE_VERSION + ' (running ' + version + '); some protections may not apply',
       )
     }
   } catch {
     // $.session.version() unavailable on this build; nothing to warn about
   }
+
+  try {
+    const [merged, policy] = await Promise.all([$.settings.read(), $.settings.read({ source: 'policy' })])
+    const mcpAllowlist = parseAllowlist(pluginOptions.mcp_server_allowlist)
+    const postureWarnings = checkPosture({ merged, policy }, PLUGIN_NAME, mcpAllowlist)
+    for (const warning of postureWarnings) statusLines.push('barmkin-mod posture: ' + warning)
+  } catch {
+    // $.settings.read() unavailable or refused on this build; nothing to warn about
+  }
+
+  if (statusLines.length > 0) $.ui.status(statusLines.join(' | '))
+
   try {
     await $.command.register({ name: 'barmkin-mod-findings', description: 'Open the barmkin-mod SAST findings pane' })
     await $.command.register({ name: 'barmkin-mod-status', description: 'Show barmkin-mod taint, breaker, and last classifier verdict' })
@@ -296,8 +378,14 @@ async function toolDescribeHook($: any, e: any, next: any) {
   const current = await next(e)
   const description = typeof current?.description === 'string' ? current.description : e.description
   if (typeof description !== 'string') return current
-  const { description: cleaned, flagged } = neutralizeDescription(description)
-  if (!flagged) return current
+
+  const scrubbed = scrubInvisible(description)
+  await taintForScrub($, scrubbed.strippedCount, 'an MCP tool description (' + e.tool + ')')
+
+  const { description: cleaned, flagged } = neutralizeDescription(scrubbed.text)
+  if (!flagged) {
+    return scrubbed.text === description ? current : { ...current, description: scrubbed.text }
+  }
   $.ui.log('barmkin-mod: flagged instruction-like text in a tool description (' + e.tool + ')', { to: 'debug' })
   if (cleaned === description) return current
   return { ...current, description: cleaned }
@@ -308,6 +396,7 @@ async function mcpGuardHook($: any, e: any, next: any) {
   if (serverName) {
     const allowlist = parseAllowlist(pluginOptions.mcp_server_allowlist)
     if (!isAllowedServer(serverName, allowlist)) {
+      await appendAudit($, { event: 'mcp-allowlist', tool: e.tool, decision: 'deny', reason: 'server not on allowlist' })
       return { deny: 'barmkin-mod: MCP server "' + serverName + '" is not on the allowlist' }
     }
   }
@@ -337,6 +426,7 @@ async function outwardEffectGuardHook($: any, e: any, next: any) {
   const isTainted = await read($, tainted)
   if (isTainted && typeof e.command === 'string' && isOutwardEffectCommand(e.command)) {
     const reason = await read($, taintReason)
+    await appendAudit($, { event: 'outward-effect', tool: 'Bash', decision: 'deny', reason: reason ?? 'unspecified' })
     return {
       deny:
         'barmkin-mod: this session is handling untrusted content (' +
@@ -406,6 +496,7 @@ async function redactionHook($: any, e: any, next: any) {
   if (!result || result.deny) return result
 
   let changed = false
+  let strippedCount = 0
   const next_: any = { ...result }
 
   // Every string inside the result is rewritten in place, whatever its
@@ -413,10 +504,14 @@ async function redactionHook($: any, e: any, next: any) {
   // typed record (Bash `{stdout, stderr, ...}`, Read `{file: {content}}`).
   // The record keeps its shape so core's output-schema validation passes.
   // Core's model-visible rendering in `text` is redacted the same way.
+  // Scrubbed (R7) before redaction: a zero-width character spliced into a
+  // token shouldn't be able to help it dodge a secret pattern either.
   const redactValue = (value: unknown): unknown => {
     if (typeof value === 'string') {
-      const { text: redacted, redactedCount } = redactText(value, REDACTION_RULES, redactionCounters)
-      if (redactedCount === 0) return value
+      const scrubbed = scrubInvisible(value)
+      strippedCount += scrubbed.strippedCount
+      const { text: redacted, redactedCount } = redactText(scrubbed.text, REDACTION_RULES, redactionCounters)
+      if (redactedCount === 0 && scrubbed.strippedCount === 0) return value
       changed = true
       return redacted
     }
@@ -432,12 +527,16 @@ async function redactionHook($: any, e: any, next: any) {
   if (Array.isArray(result.context)) {
     const redactedContext = result.context.map((c: unknown) => {
       if (typeof c !== 'string') return c
-      const { text: redacted, redactedCount } = redactText(c, REDACTION_RULES, redactionCounters)
-      if (redactedCount > 0) changed = true
+      const scrubbed = scrubInvisible(c)
+      strippedCount += scrubbed.strippedCount
+      const { text: redacted, redactedCount } = redactText(scrubbed.text, REDACTION_RULES, redactionCounters)
+      if (redactedCount > 0 || scrubbed.strippedCount > 0) changed = true
       return redacted
     })
     next_.context = redactedContext
   }
+
+  await taintForScrub($, strippedCount, 'tool:' + e.tool)
 
   return changed ? next_ : result
 }
@@ -562,11 +661,15 @@ async function sastHook($: any, e: any, next: any) {
 
 async function sessionReceiveHook($: any, e: any, next: any) {
   if (typeof e.text !== 'string' || e.text.length === 0) return next(e)
-  const verdict = await screenContent($, e.text, 'peer:' + (e.origin?.kind ?? 'unknown'), undefined)
+
+  const scrubbed = scrubInvisible(e.text)
+  await taintForScrub($, scrubbed.strippedCount, 'an inbound peer message')
+
+  const verdict = await screenContent($, scrubbed.text, 'peer:' + (e.origin?.kind ?? 'unknown'), undefined)
   if (verdict.decision === 'deny') {
     return { consumed: 'barmkin-mod: withheld an inbound message (' + verdict.reason + ')' }
   }
-  return next(e)
+  return next(scrubbed.text === e.text ? e : { ...e, text: scrubbed.text })
 }
 
 async function sessionReceiveCatch($: any, e: any, next: any) {
@@ -576,6 +679,7 @@ async function sessionReceiveCatch($: any, e: any, next: any) {
 async function sessionSendHook($: any, e: any, next: any) {
   if (typeof e.text !== 'string') return next(e)
   if (containsAnySecret(e.text, REDACTION_RULES)) {
+    await appendAudit($, { event: 'session-send-dlp', tool: 'session.send', decision: 'deny', reason: 'message appears to contain a secret' })
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it appears to contain a secret' }
   }
   return next(e)
@@ -589,6 +693,7 @@ async function agentSpawnHook($: any, e: any, next: any) {
   const isTainted = await read($, tainted)
   if (isTainted) {
     const reason = await read($, taintReason)
+    await appendAudit($, { event: 'agent-spawn', tool: 'agent.spawn', decision: 'deny', reason: reason ?? 'unspecified' })
     return {
       deny:
         'barmkin-mod: subagent spawn blocked while this session is tainted (' +
@@ -601,6 +706,36 @@ async function agentSpawnHook($: any, e: any, next: any) {
 
 async function agentSpawnCatch($: any, e: any, next: any) {
   return { deny: 'barmkin-mod: the a2a spawn guard failed (' + next.error.kind + '); subagent spawn blocked' }
+}
+
+// ---------------------------------------------------------------------------
+// session.append redaction/scrub backstop (R12). Covers channels the
+// tool.call-scoped hooks above can't reach at all (skill text, CLAUDE.md and
+// instruction-file content, slash-command arguments, attachments) by
+// catching their secrets and invisible characters on the way into the
+// stored transcript instead.
+//
+// This is a backstop, not a guard: Claude Code's session.append docs say a
+// hook may rewrite a text block's `text` and a tool_result block's
+// `content`/`is_error` (both honoured -- confirmed from the generated
+// 2.1.287 types, not just observed live), but every other door than the
+// plugin's own `note` ignores a `{ deny }` answer and a hook that fails
+// before calling `next` is "skipped": the row stores as it arrived, not
+// withheld. So there's no fail-closed shape available here (no `.catch` can
+// make a failure deny), unlike every tool.call guard above. Treat this the
+// way the outermost redaction pass is documented, as defense in depth for
+// what reaches the model and the transcript, not as an enforcement floor.
+// ---------------------------------------------------------------------------
+
+async function sessionAppendRedactionHook($: any, e: any, next: any) {
+  const content = e.message?.content
+  if (!Array.isArray(content)) return next(e)
+
+  const result = scrubAndRedactContent(content, REDACTION_RULES, redactionCounters)
+  await taintForScrub($, result.strippedCount, 'a stored message (door:' + e.door + ')')
+
+  if (!result.changed) return next(e)
+  return next({ ...e, message: { ...e.message, content: result.content } })
 }
 
 // ---------------------------------------------------------------------------
@@ -714,6 +849,10 @@ export function register(on: any, options: Record<string, unknown>) {
   on('session.receive', sessionReceiveHook).catch(sessionReceiveCatch)
   on('session.send', sessionSendHook).catch(sessionSendCatch)
   on('agent.spawn', agentSpawnHook).catch(agentSpawnCatch)
+  // No .catch: session.append only honours a `{ deny }` answer for the
+  // plugin's own door ('note'), which this hook never uses -- see the
+  // hook's own header comment for why there is no fail-closed shape here.
+  on('session.append', sessionAppendRedactionHook)
 
   on('ui.render', { component: 'Pane' }, findingsPaneHook)
   on('ui.render', { component: 'AbovePrompt' }, hudHook)

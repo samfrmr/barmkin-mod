@@ -104,6 +104,19 @@ test('never redacts code expressions assigned to a *_KEY constant', () => {
   expect(text).toBe(source)
 })
 
+test('never redacts code expressions assigned to a *_TOKEN/*_PASSWORD/*_CREDENTIALS constant', () => {
+  const source = [
+    'CSRF_TOKEN = generate_csrf_token()',
+    'RESET_PASSWORD_URL = "/reset"',
+    'const ACCESS_TOKEN = `Bearer ${jwt}`;',
+    'AWS_CREDENTIALS=session.get_credentials()',
+    'API_PASSWD="${DB_PASSWD}"',
+  ].join('\n')
+  const { text, redactedCount } = redactText(source, REDACTION_RULES, {})
+  expect(redactedCount).toBe(0)
+  expect(text).toBe(source)
+})
+
 test('redacts a secret literal on one line without touching its neighbours', () => {
   const input = "DEBUG = True\nSECRET_KEY = 'django-insecure-k3$9!x@7v#q2(w)0z+e8&r^t5u%y1i*o4p'\nCACHE_KEY = 'user'"
   const { text } = redactText(input, REDACTION_RULES, {})
@@ -138,4 +151,75 @@ test('never redacts part of an unquoted token or a quoted literal used in an exp
   const { text, redactedCount } = redactText(source, REDACTION_RULES, {})
   expect(redactedCount).toBe(0)
   expect(text).toBe(source)
+})
+
+// R1 security-review corpus (data/barmkin-mod-security-review/report.md F2,
+// section 1.4): one vector per category the review's node probe ran against
+// main's rules. 16 of 19 flip from missed to redacted with this refresh;
+// the remaining 3 are documented, deliberate gaps (see the final block) --
+// not silently dropped, since inventing an unprincipled regex for a bare
+// high-entropy string risks corrupting ordinary text (hashes, ids) with no
+// real detection benefit. The two "baseline" vectors below already redacted
+// on main; they're here only so a future rule-set change can't silently
+// regress them.
+test('F2 corpus: vendor-prefix vectors the refresh newly catches', () => {
+  const vectors: Array<[string, string]> = [
+    ['anthropic sk-ant-api03 bare', 'sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-ABCDEFGHIJKLMNOPQRSTUVWXYZ'],
+    [
+      'anthropic key in JSON',
+      '{"ANTHROPIC_API_KEY": "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-ABCDEFGHIJKLMNOPQRSTUVWXYZ"}',
+    ],
+    [
+      'anthropic minus prefix (MS case)',
+      'api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-ABCDEFGH',
+    ],
+    ['openai sk-proj', 'sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-ABCDEFGHIJKLMNOPQRSTUVWXYZ'],
+    ['openrouter sk-or-v1', 'sk-or-v1-' + 'a1b2c3d4e5f6'.repeat(3)],
+    ['stripe sk_live_', 'STRIPE_SECRET_KEY="sk_live_4eC39HqLyjWDarjtT1zdp7dc"'],
+    ['github fine-grained PAT', 'github_pat_' + '11AAAAAAA0'.repeat(3)],
+    ['google api key (AIza...)', 'AIza' + 'Sy'.padEnd(35, 'A1b2C3')],
+    ['npm token', 'npm_' + 'A1b2C3d4E5f6'.repeat(3)],
+    ['hf token', 'hf_' + 'A1b2C3d4E5f6'.repeat(3)],
+    ['DB_PASSWORD env', 'DB_PASSWORD=Sup3rSecretPassw0rd'],
+    ['API_TOKEN env', 'API_TOKEN=abcdef0123456789abcd'],
+    ['postgres url w/ password', 'postgres://dbuser:S3cureP4ssw0rd@db.example.com:5432/mydb'],
+    ['slack webhook', '[REDACTED]'],
+  ]
+  for (const [, sample] of vectors) {
+    const { redactedCount } = redactText(sample, REDACTION_RULES, {})
+    expect(redactedCount > 0).toBe(true)
+  }
+})
+
+test('F2 corpus: baseline vectors that already redacted on main keep redacting', () => {
+  const vectors: Array<[string, string]> = [
+    ['openai legacy sk-', 'sk-ABCDEFGHIJ1234567890'],
+    ['ANTHROPIC_API_KEY env (via *_KEY=)', 'ANTHROPIC_API_KEY=abcdef0123456789abcd'],
+  ]
+  for (const [, sample] of vectors) {
+    const { redactedCount } = redactText(sample, REDACTION_RULES, {})
+    expect(redactedCount > 0).toBe(true)
+  }
+})
+
+// Deliberately not fixed by R1: each needs either decoding (base64) or a
+// bare-high-entropy-string heuristic with no safe signal to anchor on (no
+// vendor prefix, no *_KEY=-style name, no reliable shape), which the
+// review's design sketch for R1 does not specify and which would risk
+// flagging ordinary hashes, ids and tokens as secrets. Tracked as open gaps
+// (F2), not silently dropped.
+test('F2 corpus: known gaps this refresh does not close', () => {
+  const bareAwsSecret = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+  expect(containsAnySecret(bareAwsSecret, REDACTION_RULES)).toBe(false)
+
+  // Google's own docs call `private_key_id` a non-sensitive rotation id --
+  // only the accompanying `private_key` PEM (already caught by the
+  // private-key-block rule above) is the actual secret.
+  const gcpPrivateKeyId = '"private_key_id": "3f29a6c1e4b8d0f27a51c6e9b4d7f3a8c2e5b1d0"'
+  expect(containsAnySecret(gcpPrivateKeyId, REDACTION_RULES)).toBe(false)
+
+  // s1ngularity-style evasion: base64 of an AWS key pair, decoded only by a
+  // human or a tool that unwraps base64 before scanning.
+  const base64OfAwsKey = btoa('AKIAIOSFODNN7EXAMPLE:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')
+  expect(containsAnySecret(base64OfAwsKey, REDACTION_RULES)).toBe(false)
 })

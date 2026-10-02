@@ -24,6 +24,9 @@ CI validates against Claude Code 2.1.287+ because the sandbox this plugin was de
 | 5 | SAST UI (semgrep) | `tool.call` on Edit/Write/MultiEdit/NotebookEdit, a findings pane, inline context feedback, optional hold on high severity |
 | 6 | Jev System One classifier gateway | shared by capabilities 2 and 4 |
 | 7 | Classifier explanation surface | `$.ui.notice` under the pending permission dialog, an `AbovePrompt` HUD band, `/barmkin-mod-status` |
+| 8 | Invisible-Unicode, bidi and ANSI scrubber | the outermost `tool.call` redaction pass, `tool.describe`, `session.receive`, the `session.append` backstop |
+| 9 | Durable audit log + `session.append` redaction backstop | `session.append` (rewrite), called from every guard decision above |
+| 10 | Posture self-check | `session.start` (`$.settings.read`, `$.ui.status`) |
 
 ### Secret redaction
 
@@ -31,7 +34,9 @@ A `tool.call` hook registered with no matcher (so it wraps every other `tool.cal
 
 The pattern list (`hooks/lib/redaction-rules.ts`) mirrors the shape of barmkin's `rules.yaml` "Secrets" section (`name`/`pattern`/`example`) plus `jev.go`'s pre-egress `secretPatterns`, unioned by hand. There's no YAML parsing step here (mods have no dependency install and this project stays decoupled from barmkin's repo), so when barmkin's secret rules change, update this list manually and keep the `example` vectors in `tests/redaction.test.ts` in sync.
 
-The generic `*_KEY=` / `*SECRET=` assignment rule only redacts a bare literal, wherever it appears on the line (including inline env prefixes like `API_KEY=… npm start` or `docker run -e API_KEY=…`, and pairs wrapped in quotes or backticks like `-e "API_KEY=…"`): a quoted string not followed by an operator or accessor and not starting with `$VAR` or containing `${...}` interpolation, or a whole unquoted token with no code syntax (`(`, `[`, `{`, `.`, backticks, quotes, or a leading `$VAR`). The whole value is redacted, including any punctuation inside it. Code expressions assigned to a `*_KEY` constant (`hashlib.sha256(...)`, `settings.X`, template literals) are never touched, so reading and rewriting ordinary source can't corrupt it. The known gap: a secret that is built by code, or written unquoted with one of those characters, isn't caught by this rule (the structured token rules above still apply).
+The generic `*_KEY=` / `*SECRET=` / `*_TOKEN=` / `*_PASSWORD=` / `*_PASSWD=` / `*_CREDENTIAL(S)=` / `*_PAT=` assignment rule only redacts a bare literal, wherever it appears on the line (including inline env prefixes like `API_KEY=… npm start` or `docker run -e API_KEY=…`, and pairs wrapped in quotes or backticks like `-e "API_KEY=…"`): a quoted string not followed by an operator or accessor and not starting with `$VAR` or containing `${...}` interpolation, or a whole unquoted token with no code syntax (`(`, `[`, `{`, `.`, backticks, quotes, or a leading `$VAR`). The whole value is redacted, including any punctuation inside it. Code expressions assigned to a `*_KEY` constant (`hashlib.sha256(...)`, `settings.X`, template literals) are never touched, so reading and rewriting ordinary source can't corrupt it. The known gap: a secret that is built by code, or written unquoted with one of those characters, isn't caught by this rule (the structured token rules above still apply).
+
+Vendor-prefix rules cover current-generation credential shapes: Anthropic (`sk-ant-api03-…`, `sk-ant-oat01-…`, etc., plus the `api0<N>-…` body alone for a prefix-stripped key, the evasion the Microsoft Claude Code Action incident used), OpenAI (`sk-proj-…`, `sk-svcacct-…`, and the legacy bare `sk-…` shape), OpenRouter (`sk-or-v1-…`), GitHub fine-grained PATs (`github_pat_…`), Stripe (`sk_live_…`/`sk_test_…`/`rk_live_…`/`rk_test_…`), Google (`AIza…`), npm (`npm_…`), Hugging Face (`hf_…`), broadened Slack tokens and webhook URLs, GitLab PATs of any length 20 or over, and a URL's userinfo segment (`scheme://user:password@…`, redacted whole since this module only ever replaces a rule's full match). **Known, deliberately unfixed gaps** (no safe prefix or name-based signal exists without a high false-positive rate): a bare high-entropy secret with no vendor prefix or `*_KEY=`-style name attached (e.g. an AWS secret access key pasted alone), a GCP service-account `private_key_id` field (Google's own docs call this one non-sensitive; the accompanying `private_key` PEM is still caught by the `private-key-block` rule), and a base64-obfuscated secret (the s1ngularity-style evasion, which needs decoding before any pattern can see it). `tests/redaction.test.ts` carries the security review's full 19-sample corpus, including these three as explicit "known gap" tests, so a future change can see at a glance what's deliberately open versus accidentally regressed.
 
 Every string inside the result is rewritten in place, whatever its shape: a plain string, an MCP content-block array, or a built-in tool's typed record (Bash `{stdout, stderr, ...}`, Read `{file: {content}}`). The record keeps its shape so core's output-schema validation still passes, and core's model-visible `text` rendering is redacted the same way.
 
@@ -56,6 +61,18 @@ While the session is tainted, a `tool.call` hook on Bash denies any command matc
 ### Agent-to-agent firewall
 
 `session.receive` screens inbound peer/subagent messages with the same classifier used for fetched content, and withholds (`{consumed}`) a message that scores at the deny threshold. `session.send` is pure DLP: a message containing a secret-shaped substring is not delivered (`{isDelivered: false}`) — no partial redact-and-send, since this event doesn't support rewriting the outbound text. `agent.spawn` is covered under taint above.
+
+### Invisible-Unicode, bidi and ANSI scrubber
+
+`hooks/lib/scrub.ts`'s `scrubInvisible` strips, from every string the outermost redaction pass sees (so every `tool.call` result and its `context`), an MCP tool description (`tool.describe`), an inbound peer message (`session.receive`), and the `session.append` backstop below: the Unicode Tags block (U+E0000-E007F, used to hide a full instruction behind a visible emoji), zero-width characters (U+200B-200D, U+2060, and U+FEFF mid-text — a leading byte-order mark is left alone as a legitimate encoding marker), bidi override/isolate controls (U+202A-202E, U+2066-2069 — the "Trojan Source" class), C0/C1 controls other than tab/newline/CR, and full ANSI/VT escape sequences (not just the bare ESC byte, which would leave inert parameter text behind). A run of four or more consecutive variation selectors (U+FE00-FE0F, plus the supplementary plane U+E0100-E01EF) is stripped as the steganographic encoding some invisible-prompt-injection demos use; a lone or paired selector (ordinary emoji presentation, a keycap digit) is left alone.
+
+Scrubbing more than three characters from one piece of content taints the session the same way an injection-scored screen does (`$.state`'s `tainted`/`taintReason`), under the same "escalate only, never auto-deny" posture as the rest of this layer. Separately, a hidden HTML comment (`<!-- … -->`) in content that reaches the injection heuristic (`heuristicInjectionScore` in `hooks/lib/taint.ts`) contributes to that score like any other heuristic pattern — the Microsoft Claude Code Action incident hid its payload this way — without being, on its own, grounds for an automatic deny.
+
+### Durable audit log and the `session.append` backstop
+
+An append-only JSONL file at `~/.claude/barmkin-mod-audit.jsonl` (resolved via `$HOME`, capped to the most recent ~2000 rows) records `{ts, session, event, tool, decision, reason}` for every notable guard decision this mod makes: every content screen (`screenContent`'s pass/escalate/deny), an outward-effect Bash deny, an MCP allowlist rejection, an `agent.spawn` deny while tainted, a `session.send` DLP withhold, and a scrub that crossed the taint threshold. `reason` is always a short category, probability or rule name — never a secret value or raw untrusted content — matching the "categories/counts only" rule this mod already holds for every other classifier surface. The write is best-effort: a failure here never denies, delays or alters the call it's recording, since the log is a record of a decision already made elsewhere, not a decision point of its own (there is deliberately no `.catch` on anything here; see `appendAudit` in `hooks/register.ts`).
+
+A `session.append` hook runs the same redactor and scrubber over every row before it's stored, as a backstop for the channels the `tool.call`-scoped hooks above can't reach at all: skill text, CLAUDE.md and instruction-file content, slash-command arguments, and attachments. Per Claude Code's own `session.append` documentation (confirmed against the generated 2.1.287 types, not only observed live), a hook may rewrite a text block's `text` and a tool-result block's `content`/`is_error` and the engine honours it; every other block kind (thinking, tool_use, media, an unknown kind) is put back regardless of what a hook returns, so this only touches the two kinds that are. **This is a backstop, not a guard**: only the plugin's own append (door `note`) honours a `{ deny }` answer, and a hook that fails before calling `next` on any other door is skipped — the row stores as it arrived, not withheld. There is no fail-closed shape available for this event, unlike every `tool.call` guard above; treat it the same way the outermost redaction pass itself is described above, as defense in depth for what reaches the model and the transcript, not as an enforcement floor.
 
 ### SAST UI (semgrep)
 
@@ -93,6 +110,19 @@ Every screen call records a verdict in `$.state` (`question`, `probability`, `de
 - An `AbovePrompt` HUD band, drawn only while there's something to report (taint on, a verdict recorded, or the breaker open), showing taint state, breaker state, and the last verdict.
 - `/barmkin-mod-status`, a command-based fallback for surfaces where the band doesn't render (non-interactive runs, some SDK hosts).
 
+### Posture self-check
+
+At `session.start`, a `$.settings.read()` pair (the merged settings, and `{ source: 'policy' }` for the managed-only `prependPlugins` seating check) is compared against the seat and defaults this mod assumes, and every mismatch is folded into one `$.ui.status` line:
+
+- this mod is not named in managed `prependPlugins` at all (it's running from the user tier, with the reach that implies — see "Seat requirements" below);
+- `sec-default` is seated ahead of it in that list, so it still can't see `skill.prompt`, `prompt.context` or `prompt.section` even though it is seated;
+- `disableSkillShellExecution` is unset (the skill inline-shell bypass, F1, stays open);
+- the Bash sandbox is off (`sandbox.enabled` isn't `true`): this mod's taint-gated denies are the only barrier, with no OS-level egress floor underneath;
+- the session's permission mode is `bypassPermissions`;
+- `mcp_server_allowlist` is empty (audit-only, every server is allowed to run tools).
+
+This never blocks anything — it's a status line, not a guard — and a settings read that fails or is refused is treated as "nothing to warn about" rather than surfaced as an error, consistent with this hook's existing fail-silent version check.
+
 ## Security posture
 
 - **Seat this as an org mod**, not a user-installed one, via managed `prependPlugins` so it runs ahead of (and can't be disabled by) whatever users install:
@@ -108,6 +138,17 @@ Every screen call records a verdict in `$.state` (`question`, `probability`, `de
   ```
 
   Delivered this way, `sec-default@builtin` also seats, which holds rule-named deny verdicts over anything a user-installed mod tries to loosen.
+
+  **Seat requirements** -- which capabilities need this mod in managed `prependPlugins`, ahead of `sec-default`, to work at all (the security review's F4: where `sec-default` is seated, it keeps these events from a user-tier mod regardless of what that mod hooks):
+
+  | Capability | Works from the user tier? |
+  |---|---|
+  | Secret redaction, taint + injection screen, MCP tool-poisoning guard, agent-to-agent firewall, SAST UI | Yes -- all on `tool.call`/`tool.describe`/`session.*`/`agent.spawn`, none of which `sec-default` forwards past the user tier |
+  | Durable audit log, the `session.append` redaction backstop | Yes -- `session.append` is not forwarded either |
+  | Posture self-check (`session.start`, `$.settings.read`) | Yes |
+  | Invisible-Unicode/bidi/ANSI scrubber | Yes for the sites this bundle wires it into (`tool.call`, `tool.describe`, `session.receive`, `session.append`); a future screen of `skill.prompt`/`prompt.context` content would need the seat below |
+  | Any future `skill.prompt` or `prompt.context`/`prompt.section` screen (not built in this bundle) | **No** -- needs this mod named in managed `prependPlugins` ahead of `sec-default@builtin`, or `sec-default` forwards that content past the user tier before this mod ever sees it |
+
 - **Fail closed, with a 1-second budget.** Every hook that can deny/consume/withhold has a `.catch` that does so on failure (`next.error.kind` names whether it was a throw or a timeout). Purely advisory hooks (SAST's inline findings, the HUD) have none, so the documented no-`.catch` default applies: a pre-`next()` failure skips the hook silently (the action proceeds without the annotation), a post-`next()` failure leaves the result as `next()` produced it. Neither path can loosen a decision this mod or anything upstream of it already made.
 - **Never looser than decided.** Nothing in this mod uses `tool.check`. Every guard acts on `tool.call` with `{deny}`, which is unspoofable and runs before the permission check — not `tool.check`'s `ask`, which [in auto mode reaches the server-side classifier, not a human](https://code.claude.com/docs/en/plugins/mods/events#approve-or-refuse-a-tool-call-before-the-user-is-asked). A guard here only ever adds a deny/consume/withhold on top of whatever the permission rules, settings hooks, and mode already decided; it never answers `allow`.
 - **This is not an enforcement floor.** `--safe-mode`, three hooks-worker crashes, or a managed `allowManagedModsOnly: false` fleet policy without `prependPlugins` can all mean this mod never loads. It complements an enforcement floor delivered as a *managed settings hook* (such as barmkin's), which survives all three; it is not a substitute for one.

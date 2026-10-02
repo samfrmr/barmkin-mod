@@ -137,6 +137,12 @@ const INJECTION_HEURISTIC_PATTERNS: RegExp[] = [
   /\bsystem prompt\b/i,
   /\bdo not (tell|inform|mention) the (user|operator)\b/i,
   /\bact as\b.{0,20}\bwithout (restrictions|limits)\b/i,
+  // Hidden HTML comments: a common vehicle for hiding instructions in
+  // rendered markdown (the Microsoft Claude Code Action incident hid a
+  // payload this way). A comment alone is common and often benign, so this
+  // only ever contributes to the heuristic score like every pattern above,
+  // never an automatic deny.
+  /<!--[\s\S]*?-->/,
 ]
 
 // Degraded-mode screen used when no Jev endpoint is configured, or the
