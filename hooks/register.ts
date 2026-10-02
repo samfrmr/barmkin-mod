@@ -205,9 +205,11 @@ async function screenContent(
   if (canUseJev) {
     const outcome = await callJevSystemOne($, jev, text)
     if (outcome.ok) {
-      injectionProb = Math.max(injectionProb, outcome.answers.injection ?? 0)
-      credentialProb = Math.max(credentialProb, outcome.answers.credentials ?? 0)
-      model = outcome.model
+      const jevInjection = outcome.answers.injection ?? 0
+      const jevCredential = outcome.answers.credentials ?? 0
+      if (Math.max(jevInjection, jevCredential) > Math.max(injectionProb, credentialProb)) model = outcome.model
+      injectionProb = Math.max(injectionProb, jevInjection)
+      credentialProb = Math.max(credentialProb, jevCredential)
       await update($, breakerFailureCount, () => 0)
     } else {
       await recordBreakerFailure($)
