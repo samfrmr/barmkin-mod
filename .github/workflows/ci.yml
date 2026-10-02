@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # package.json pins @anthropic-ai/claude-code to the mods version
+      # floor this plugin targets (see README's "Version floor" section).
+      # The sandbox this plugin was authored in runs an older build that
+      # lacks `claude plugin test` entirely and rejects some newer event
+      # names in `validate`, so this install is the actual verification
+      # surface, not a formality.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: claude plugin validate --strict
+        run: npm run validate
+
+      - name: claude plugin test
+        run: npm test

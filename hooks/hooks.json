@@ -1,0 +1,4 @@
+{
+  "description": "barmkin-mod security layer hooks module",
+  "modules": ["./register.ts"]
+}

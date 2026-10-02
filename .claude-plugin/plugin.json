@@ -1,0 +1,42 @@
+{
+  "name": "barmkin-mod",
+  "displayName": "Barmkin Mod",
+  "version": "0.1.0",
+  "description": "Claude Code mods security layer: secret redaction, untrusted-content taint, MCP tool-poisoning guard, agent-to-agent firewall, SAST findings UI, and a Jev System One classifier gateway with an explanation surface.",
+  "author": { "name": "samfrmr" },
+  "repository": "https://github.com/samfrmr/barmkin-mod",
+  "license": "MIT",
+  "keywords": ["security", "mods", "redaction", "sast", "classifier"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "jev_base_url": {
+      "type": "string",
+      "title": "Jev System One base URL",
+      "description": "System One wire-format endpoint (OpenRouter or Vercel AI Gateway style, e.g. https://openrouter.ai/api). The mod POSTs to {base_url}/v1/systemone. Never barmkin's internal gateway. Leave empty to run with the classifier disabled (taint marking falls back to pattern heuristics only)."
+    },
+    "jev_model": {
+      "type": "string",
+      "title": "Jev model id",
+      "description": "Pinned Jev model spelling for your provider, e.g. jev-1.13.0 (TypeSafe direct) or typesafe/jev-1.13-20260917 (OpenRouter). Must match the jev-1.13 pattern.",
+      "default": "jev-1.13.0"
+    },
+    "jev_api_key": {
+      "type": "string",
+      "title": "Jev API key",
+      "description": "Bearer credential for the System One endpoint. Stored in secure credential storage, never written to settings.json or logged.",
+      "sensitive": true
+    },
+    "mcp_server_allowlist": {
+      "type": "string",
+      "title": "Allowed MCP server names",
+      "description": "Comma-separated MCP server names allowed to run tools (parsed from mcp__<server>__<tool>). Leave empty to allow all servers (audit-only, no enforcement).",
+      "multiple": true
+    },
+    "sast_hold_on_high_severity": {
+      "type": "boolean",
+      "title": "Hold on high-severity SAST findings",
+      "description": "When a semgrep ERROR-severity finding appears after an edit, ask the user to acknowledge it before the turn continues. When off, findings are advisory only (shown inline and fed to Claude as context).",
+      "default": false
+    }
+  }
+}
