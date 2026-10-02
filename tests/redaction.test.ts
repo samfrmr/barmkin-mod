@@ -72,3 +72,16 @@ test('still redacts real secret values assigned to *_KEY or sent as Bearer token
   expect(text).not.toContain('sk_live_4eC39HqLyjWDarjtT1zdp7dc')
   expect(text).not.toContain('9f8e7d6c5b4a39281706f5e4d3c2b1a0')
 })
+
+test('redacts the whole *_KEY value even when it contains punctuation', () => {
+  const cases = [
+    "SECRET_KEY = 'django-insecure-k3$9!x@7v#q2(w)0z+e8&r^t5u%y1i*o4p'",
+    'DB_KEY=Xk9#mP2$vL8@qR4!wN7z',
+    'API_KEY=abcdef0123456789abcd.secretTAIL99',
+  ]
+  for (const line of cases) {
+    const { text, redactedCount } = redactText(line, REDACTION_RULES, {})
+    expect(redactedCount).toBe(1)
+    expect(text).toBe('[REDACTED:env-key#1]')
+  }
+})

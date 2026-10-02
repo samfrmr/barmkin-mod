@@ -71,7 +71,7 @@ export const REDACTION_RULES: RedactionRule[] = [
   },
   {
     name: 'generic-key-env-assignment',
-    pattern: /\b[A-Z0-9_]*_KEY\s*=\s*(['"]?)(?=[A-Za-z0-9\/+_-]*\d)[A-Za-z0-9\/+_-]{16,}=*\1/g,
+    pattern: /\b[A-Z0-9_]*_KEY\s*=\s*(['"]?)(?=[^\s'"]*\d)[^\s'"]{16,}\1/g,
     category: 'env-key',
     example: 'AWS_SECRET_KEY=abcdef0123456789',
   },
