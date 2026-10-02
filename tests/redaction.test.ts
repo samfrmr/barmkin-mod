@@ -119,6 +119,7 @@ test('redacts a bare literal secret that has other text after it on the same lin
     ['docker run -e "API_KEY=f3b9c0d8a7e6152493ab" img', 'docker run -e "[REDACTED:env-key#1]" img'],
     ["export 'DB_KEY=Xk9#mP2$vL8@qR4!wN7z'", "export '[REDACTED:env-key#1]'"],
     ['["API_KEY=f3b9c0d8a7e6152493ab"]', '["[REDACTED:env-key#1]"]'],
+    ['Set `API_KEY=f3b9c0d8a7e6152493ab` first', 'Set `[REDACTED:env-key#1]` first'],
     ["SECRET_KEY = 'django-insecure-k3$9!x@7v#q2(w)0z+e8&r^t5u%y1i*o4p'  # dev only", '[REDACTED:env-key#1]  # dev only'],
   ]
   for (const [input, expected] of cases) {
@@ -132,6 +133,7 @@ test('never redacts part of an unquoted token or a quoted literal used in an exp
     "SESSION_KEY = 'abcdef0123456789abcd' + user_id",
     "TOKEN_KEY = 'abcdef0123456789abcd'.encode()",
     'CACHE_KEY = hashlib_sha256_digest_v2(data)',
+    'foo(API_KEY=some_identifier_2024)',
   ].join('\n')
   const { text, redactedCount } = redactText(source, REDACTION_RULES, {})
   expect(redactedCount).toBe(0)
