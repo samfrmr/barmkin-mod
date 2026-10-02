@@ -77,11 +77,32 @@ test('redacts the whole *_KEY value even when it contains punctuation', () => {
   const cases = [
     "SECRET_KEY = 'django-insecure-k3$9!x@7v#q2(w)0z+e8&r^t5u%y1i*o4p'",
     'DB_KEY=Xk9#mP2$vL8@qR4!wN7z',
-    'API_KEY=abcdef0123456789abcd.secretTAIL99',
+    'API_KEY=f3b9c0d8a7e6152493ab',
+    'CLIENT_SECRET="Zq8$w!Rk2@pL9#xV5^mN"',
   ]
   for (const line of cases) {
     const { text, redactedCount } = redactText(line, REDACTION_RULES, {})
     expect(redactedCount).toBe(1)
     expect(text).toBe('[REDACTED:env-key#1]')
   }
+})
+
+test('never redacts code expressions assigned to a *_KEY constant', () => {
+  const source = [
+    'CACHE_KEY = hashlib.sha256(data).hexdigest()',
+    'SIGNING_KEY=settings.SECRET_KEY_V2_2024',
+    'ENCRYPTION_KEY = base64.b64decode(os.environ["ENC"])',
+    'const STORAGE_KEY = `app:v2:${userId}`;',
+    "SESSION_KEY = 'prefix_2024_' + user_id",
+    'DEPLOY_KEY=$DEPLOY_KEY_FROM_CI_2024',
+  ].join('\n')
+  const { text, redactedCount } = redactText(source, REDACTION_RULES, {})
+  expect(redactedCount).toBe(0)
+  expect(text).toBe(source)
+})
+
+test('redacts a secret literal on one line without touching its neighbours', () => {
+  const input = "DEBUG = True\nSECRET_KEY = 'django-insecure-k3$9!x@7v#q2(w)0z+e8&r^t5u%y1i*o4p'\nCACHE_KEY = 'user'"
+  const { text } = redactText(input, REDACTION_RULES, {})
+  expect(text).toBe("DEBUG = True\n[REDACTED:env-key#1]\nCACHE_KEY = 'user'")
 })
