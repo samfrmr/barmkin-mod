@@ -107,3 +107,18 @@ test('screens injected text past the first 8000 characters of a fetched page', a
   const out = await $.tool.call({ tool: 'Bash', command: 'git push origin main' })
   expect(out.deny).toBeDefined()
 })
+
+test('a Read of ordinary source that mentions keys passes through unredacted', async ($, on) => {
+  const source = "CACHE_KEY = 'user'\nPRIMARY_KEY = \"id\"\n# Clients use Bearer authentication.\n"
+  on('tool.call', () => ({ result: source }))
+  const out = await $.tool.call({ tool: 'Read', file_path: 'config.py' })
+  expect(out.result).toBe(source)
+})
+
+test('a Read of a real secret assigned to a *_KEY variable is still redacted', async ($, on) => {
+  on('tool.call', () => ({ result: 'AWS_SECRET_ACCESS_KEY = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n' }))
+  const out = await $.tool.call({ tool: 'Read', file_path: 'settings.py' })
+  expect(out.result).not.toContain('wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')
+  expect(out.result).toContain('[REDACTED:env-key#')
+})
+

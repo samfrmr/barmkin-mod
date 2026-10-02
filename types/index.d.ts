@@ -8,7 +8,6 @@ declare module 'claude-code' {
       // above the injection threshold. Cleared on the next real user prompt.
       tainted: boolean
       taintReason: string | null
-      taintSetAt: number
 
       // Last Jev System One verdict, for the explanation surface (HUD band
       // and $.ui.notice under the permission dialog).

@@ -33,7 +33,7 @@ export function buildSystemOneRequest(
 export const JEV_MODEL_PATTERN = /jev-1\.13\b/
 
 export type SystemOneParseResult =
-  | { ok: true; answers: Record<string, number>; model: string; id: string }
+  | { ok: true; answers: Record<string, number>; model: string }
   | { ok: false; reason: string }
 
 // Strictly validates a System One response the way jev.go's ask() does: an
@@ -80,6 +80,5 @@ export function parseSystemOneResponse(
     }
     out[id] = p
   }
-  const id = typeof body.id === 'string' ? body.id : ''
-  return { ok: true, answers: out, model, id }
+  return { ok: true, answers: out, model }
 }

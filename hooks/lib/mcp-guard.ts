@@ -1,17 +1,21 @@
 // Pure helpers for the MCP tool-poisoning guard. Hardens tool descriptions
-// (strip instruction-like text aimed at the agent) and extracts the
+// (strip instruction-like text aimed at the agent, flag ambiguous phrasing)
+// and extracts the
 // server name an mcp__<server>__<tool> name was registered under.
 
 const INSTRUCTION_PHRASES = [
   /\bignore (all|any|previous|prior) instructions?\b/i,
-  /\byou must\b/i,
   /\balways (run|call|use|execute)\b/i,
   /\bnever tell the user\b/i,
   /\bdo not (mention|tell|inform|reveal) the user\b/i,
   /\bbefore (calling|using) any other tool\b/i,
-  /\bsystem prompt\b/i,
   /\boverrides? (all|any|every) (other )?(rule|instruction|policy)/i,
 ]
+
+// Common in legitimate usage notes ("You must pass the repo as
+// owner/name."), so a match only flags the description for review; the
+// sentence is kept.
+const FLAG_ONLY_PHRASES = [/\byou must\b/i, /\bsystem prompt\b/i]
 
 export interface DescribeResult {
   description: string
@@ -21,20 +25,23 @@ export interface DescribeResult {
 
 // Strips sentences containing instruction-like phrases rather than the
 // whole description, so a legitimate tool whose description merely
-// mentions one risky word in passing still reads sensibly.
+// mentions one risky word in passing still reads sensibly. Flag-only
+// phrases are reported in matchedPhrases but never removed.
 export function neutralizeDescription(description: string): DescribeResult {
   const sentences = description.split(/(?<=[.!?])\s+/)
   const matched: string[] = []
+  let stripped = false
   const kept = sentences.filter((sentence) => {
-    const hit = INSTRUCTION_PHRASES.find((re) => re.test(sentence))
-    if (hit) {
+    if (INSTRUCTION_PHRASES.some((re) => re.test(sentence))) {
       matched.push(sentence.trim())
+      stripped = true
       return false
     }
+    if (FLAG_ONLY_PHRASES.some((re) => re.test(sentence))) matched.push(sentence.trim())
     return true
   })
   const flagged = matched.length > 0
-  const description_ = flagged
+  const description_ = stripped
     ? kept.join(' ').trim() || '[barmkin-mod: description withheld, it read as instructions to the agent]'
     : description
   return { description: description_, flagged, matchedPhrases: matched }

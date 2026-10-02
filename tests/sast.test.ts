@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { parseSemgrepJson, worstSeverity, formatFindingsContext, severityBadgeLabel } from '../hooks/lib/sast'
+import { parseSemgrepJson, worstSeverity, formatFindingsContext } from '../hooks/lib/sast'
 
 const SAMPLE_SEMGREP_JSON = JSON.stringify({
   results: [
@@ -54,10 +54,4 @@ test('formatFindingsContext includes every finding', () => {
 
 test('formatFindingsContext is empty for no findings', () => {
   expect(formatFindingsContext([])).toBe('')
-})
-
-test('severityBadgeLabel summarizes counts by severity', () => {
-  const findings = parseSemgrepJson(SAMPLE_SEMGREP_JSON)
-  expect(severityBadgeLabel(findings)).toBe('semgrep: 1 error, 1 info')
-  expect(severityBadgeLabel([])).toBe(null)
 })

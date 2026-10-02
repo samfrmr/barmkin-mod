@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   isOutwardEffectCommand,
   classifyContent,
+  composeScreen,
   isOutsideCwd,
   heuristicInjectionScore,
   DEFAULT_TAINT_THRESHOLDS,
@@ -74,4 +75,43 @@ test('heuristicInjectionScore rises with more injection phrases, capped below de
   expect(one > 0).toBe(true)
   expect(two > one).toBe(true)
   expect(two < DEFAULT_TAINT_THRESHOLDS.denyAt).toBe(true)
+})
+
+test('composeScreen never lets Jev lower a local score', () => {
+  const result = composeScreen(
+    { model: 'heuristic', injection: 0, credentials: 0.9 },
+    { model: 'jev-1.13.0', injection: 0, credentials: 0.05 },
+  )
+  expect(result.decision).toBe('escalate')
+  expect(result.question).toBe('credentials')
+  expect(result.probability).toBe(0.9)
+  expect(result.model).toBe('heuristic')
+})
+
+test('composeScreen attributes a Jev injection score that drives the reason to Jev', () => {
+  const result = composeScreen(
+    { model: 'heuristic', injection: 0, credentials: 0.9 },
+    { model: 'jev-1.13.0', injection: 0.7, credentials: 0.05 },
+  )
+  expect(result.reason).toContain('0.70 on the injection question')
+  expect(result.question).toBe('injection')
+  expect(result.probability).toBe(0.7)
+  expect(result.model).toBe('jev-1.13.0')
+})
+
+test('composeScreen attributes a heuristic injection score that drives the reason to the heuristic', () => {
+  const result = composeScreen(
+    { model: 'heuristic', injection: 0.65, credentials: 0 },
+    { model: 'jev-1.13.0', injection: 0.1, credentials: 0.7 },
+  )
+  expect(result.reason).toContain('0.65 on the injection question')
+  expect(result.question).toBe('injection')
+  expect(result.probability).toBe(0.65)
+  expect(result.model).toBe('heuristic')
+})
+
+test('composeScreen uses the local scores alone when Jev did not answer', () => {
+  const result = composeScreen({ model: 'heuristic', injection: 0, credentials: 0 }, null)
+  expect(result.decision).toBe('pass')
+  expect(result.model).toBe('heuristic')
 })

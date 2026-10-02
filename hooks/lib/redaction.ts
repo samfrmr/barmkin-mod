@@ -33,10 +33,6 @@ export function redactText(
   return { text: result, redactedCount, categories: [...categoriesHit] }
 }
 
-export function containsRedactionPlaceholder(text: string): boolean {
-  return /\[REDACTED:[a-z0-9-]+#\d+\]/.test(text)
-}
-
 // Rules carry the "g" flag for redactText's replace loop, which makes
 // RegExp.prototype.test stateful (it advances lastIndex across calls on
 // the same object). Reset it before each test so this can be called

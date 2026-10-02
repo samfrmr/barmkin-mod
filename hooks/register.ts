@@ -19,10 +19,12 @@ import { REDACTION_RULES } from './lib/redaction-rules'
 import { redactText, containsAnySecret } from './lib/redaction'
 import {
   isOutwardEffectCommand,
-  classifyContent,
+  composeScreen,
   isOutsideCwd,
   heuristicInjectionScore,
   UNTRUSTED_CONTENT_WARNING,
+  type ScoreSource,
+  type ScreenOutcome,
 } from './lib/taint'
 import {
   buildSystemOneRequest,
@@ -58,7 +60,6 @@ interface SastEntry {
 
 const tainted = atom({ plugin: 'barmkin-mod', key: 'tainted' }, false)
 const taintReason = atom({ plugin: 'barmkin-mod', key: 'taintReason' }, null as string | null)
-const taintSetAt = atom({ plugin: 'barmkin-mod', key: 'taintSetAt' }, 0)
 const lastVerdict = atom({ plugin: 'barmkin-mod', key: 'lastVerdict' }, null as Verdict | null)
 const breakerOpenUntil = atom({ plugin: 'barmkin-mod', key: 'breakerOpenUntil' }, 0)
 const breakerFailureCount = atom({ plugin: 'barmkin-mod', key: 'breakerFailureCount' }, 0)
@@ -83,7 +84,7 @@ let pluginOptions: Record<string, unknown> = {}
 // config pointing at an OpenRouter- or Vercel-AI-Gateway-style endpoint
 // that speaks the same /v1/systemone wire format as barmkin's jev.go.
 // Never barmkin's internal gateway. Jev only ever tightens a verdict
-// (pass -> escalate -> deny); see classifyContent in lib/taint.ts.
+// (pass -> escalate -> deny); see composeScreen in lib/taint.ts.
 // ---------------------------------------------------------------------------
 
 interface JevOptions {
@@ -174,15 +175,6 @@ async function recordBreakerFailure($: any): Promise<void> {
   }
 }
 
-interface ScreenVerdict {
-  decision: 'pass' | 'escalate' | 'deny'
-  tainted: boolean
-  reason: string
-  injectionProb: number
-  credentialProb: number
-  model: string
-}
-
 // Screens one piece of untrusted content (a fetched page, an MCP result, a
 // file read from outside cwd, an inbound peer message) and, as a side
 // effect, updates the taint and explanation-surface state. Top-level so it
@@ -192,45 +184,47 @@ async function screenContent(
   text: string,
   label: string,
   toolUseId: string | undefined,
-): Promise<ScreenVerdict> {
+): Promise<ScreenOutcome> {
   const jev = getJevOptions(pluginOptions)
   const now = Date.now()
   const breakerUntil = await read($, breakerOpenUntil)
   const canUseJev = jev.baseUrl !== '' && breakerUntil <= now
 
-  let injectionProb = heuristicInjectionScore(text)
-  let credentialProb = containsAnySecret(text, REDACTION_RULES) ? 0.9 : 0
-  let model = 'heuristic'
+  const local: ScoreSource = {
+    model: 'heuristic',
+    injection: heuristicInjectionScore(text),
+    credentials: containsAnySecret(text, REDACTION_RULES) ? 0.9 : 0,
+  }
+  let jevScores: ScoreSource | null = null
 
   if (canUseJev) {
     const outcome = await callJevSystemOne($, jev, text)
     if (outcome.ok) {
-      const jevInjection = outcome.answers.injection ?? 0
-      const jevCredential = outcome.answers.credentials ?? 0
-      if (Math.max(jevInjection, jevCredential) > Math.max(injectionProb, credentialProb)) model = outcome.model
-      injectionProb = Math.max(injectionProb, jevInjection)
-      credentialProb = Math.max(credentialProb, jevCredential)
+      jevScores = {
+        model: outcome.model,
+        injection: outcome.answers.injection ?? 0,
+        credentials: outcome.answers.credentials ?? 0,
+      }
       await update($, breakerFailureCount, () => 0)
     } else {
       await recordBreakerFailure($)
     }
   }
 
-  const composed = classifyContent(injectionProb, credentialProb)
+  const composed = composeScreen(local, jevScores)
 
   await update($, lastVerdict, () => ({
     toolUseId: toolUseId ?? '',
-    question: label,
-    probability: Math.max(injectionProb, credentialProb),
+    question: label + ' (' + composed.question + ')',
+    probability: composed.probability,
     decision: composed.decision,
-    model,
+    model: composed.model,
     at: now,
   }))
 
   if (composed.tainted) {
     await update($, tainted, () => true)
     await update($, taintReason, () => composed.reason)
-    await update($, taintSetAt, () => now)
   }
 
   if (toolUseId) {
@@ -238,13 +232,13 @@ async function screenContent(
       // $.ui.notice's exact id field on a tool.call event is unverified
       // against this build's generated types (see README's Phase 0
       // checklist); never let a signature mismatch break the screen.
-      $.ui.notice(toolUseId, 'barmkin-mod: ' + model + ' scored this ' + composed.decision + ' (' + composed.reason + ')')
+      $.ui.notice(toolUseId, 'barmkin-mod: ' + composed.model + ' scored this ' + composed.decision + ' (' + composed.reason + ')')
     } catch {
       // best-effort annotation only
     }
   }
 
-  return { decision: composed.decision, tainted: composed.tainted, reason: composed.reason, injectionProb, credentialProb, model }
+  return composed
 }
 
 // ---------------------------------------------------------------------------
@@ -278,7 +272,6 @@ async function sessionStartHook($: any, e: any, next: any) {
 async function promptSubmitHook($: any, e: any, next: any) {
   await update($, tainted, () => false)
   await update($, taintReason, () => null)
-  await update($, taintSetAt, () => 0)
 
   if (typeof e.text !== 'string') return next(e)
   const { text, redactedCount } = redactText(e.text, REDACTION_RULES, redactionCounters)
@@ -297,7 +290,8 @@ async function toolDescribeHook($: any, e: any, next: any) {
   if (typeof description !== 'string') return current
   const { description: cleaned, flagged } = neutralizeDescription(description)
   if (!flagged) return current
-  $.ui.log('barmkin-mod: neutralized instruction-like text in a tool description (' + e.tool + ')', { to: 'debug' })
+  $.ui.log('barmkin-mod: flagged instruction-like text in a tool description (' + e.tool + ')', { to: 'debug' })
+  if (cleaned === description) return current
   return { ...current, description: cleaned }
 }
 

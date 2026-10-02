@@ -22,7 +22,7 @@ test('parseSystemOneResponse accepts a well-formed response', () => {
     usage: { input_tokens: 10, output_tokens: 2 },
   }
   const result = parseSystemOneResponse(raw, ['injection', 'credentials'], JEV_MODEL_PATTERN)
-  expect(result).toEqual({ ok: true, answers: { injection: 0.12, credentials: 0.4 }, model: 'jev-1.13.0', id: 'req-1' })
+  expect(result).toEqual({ ok: true, answers: { injection: 0.12, credentials: 0.4 }, model: 'jev-1.13.0' })
 })
 
 test('accepts OpenRouter-mapped model spelling', () => {

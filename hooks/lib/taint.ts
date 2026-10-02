@@ -42,29 +42,81 @@ export const DEFAULT_TAINT_THRESHOLDS: TaintThresholds = {
 // decision. Mirrors barmkin's dynamic.go composeOutcome invariant: the
 // classifier only ever tightens (pass -> escalate -> deny), it never
 // produces an "allow" that overrides anything else.
+// `question` names the score that drove the decision (and its reason).
+export type ScreenQuestion = 'injection' | 'credentials'
+
+export interface ContentClassification {
+  decision: TaintDecision
+  tainted: boolean
+  reason: string
+  question: ScreenQuestion
+}
+
 export function classifyContent(
   injectionProb: number,
   credentialProb: number,
   thresholds: TaintThresholds = DEFAULT_TAINT_THRESHOLDS,
-): { decision: TaintDecision; tainted: boolean; reason: string } {
+): ContentClassification {
   if (injectionProb >= thresholds.denyAt) {
     return {
       decision: 'deny',
       tainted: true,
       reason: `content scored ${injectionProb.toFixed(2)} on the injection question (>= ${thresholds.denyAt})`,
+      question: 'injection',
     }
   }
-  if (injectionProb >= thresholds.taintAt || credentialProb >= thresholds.taintAt) {
+  if (injectionProb >= thresholds.taintAt) {
     return {
       decision: 'escalate',
       tainted: true,
-      reason:
-        injectionProb >= thresholds.taintAt
-          ? `content scored ${injectionProb.toFixed(2)} on the injection question (>= ${thresholds.taintAt})`
-          : `content scored ${credentialProb.toFixed(2)} on the credential-presence question (>= ${thresholds.taintAt})`,
+      reason: `content scored ${injectionProb.toFixed(2)} on the injection question (>= ${thresholds.taintAt})`,
+      question: 'injection',
     }
   }
-  return { decision: 'pass', tainted: false, reason: 'below taint thresholds' }
+  if (credentialProb >= thresholds.taintAt) {
+    return {
+      decision: 'escalate',
+      tainted: true,
+      reason: `content scored ${credentialProb.toFixed(2)} on the credential-presence question (>= ${thresholds.taintAt})`,
+      question: 'credentials',
+    }
+  }
+  return {
+    decision: 'pass',
+    tainted: false,
+    reason: 'below taint thresholds',
+    question: injectionProb >= credentialProb ? 'injection' : 'credentials',
+  }
+}
+
+// One source's answers to both questions: the local heuristic/secret scan,
+// or a Jev System One response.
+export interface ScoreSource {
+  model: string
+  injection: number
+  credentials: number
+}
+
+export interface ScreenOutcome extends ContentClassification {
+  probability: number
+  model: string
+}
+
+// Merges the local scores with Jev's (when it answered) per question, so
+// Jev can only raise a score, never lower it. The reported probability and
+// model are those of the question classifyContent says drove the decision,
+// so the explanation surface always names the source behind its reason.
+export function composeScreen(
+  local: ScoreSource,
+  jev: ScoreSource | null,
+  thresholds: TaintThresholds = DEFAULT_TAINT_THRESHOLDS,
+): ScreenOutcome {
+  const pick = (q: ScreenQuestion) =>
+    jev && jev[q] > local[q] ? { p: jev[q], model: jev.model } : { p: local[q], model: local.model }
+  const scores = { injection: pick('injection'), credentials: pick('credentials') }
+  const composed = classifyContent(scores.injection.p, scores.credentials.p, thresholds)
+  const driver = scores[composed.question]
+  return { ...composed, probability: driver.p, model: driver.model }
 }
 
 // Simple string-prefix check: Read's file_path is absolute in practice. A

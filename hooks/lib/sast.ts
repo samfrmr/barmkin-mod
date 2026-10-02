@@ -59,15 +59,3 @@ export function formatFindingsContext(findings: SemgrepFinding[]): string {
   return `semgrep found ${findings.length} issue(s) in this edit:\n${lines.join('\n')}`
 }
 
-export function severityBadgeLabel(findings: SemgrepFinding[]): string | null {
-  const worst = worstSeverity(findings)
-  if (!worst) return null
-  const counts = findings.reduce<Record<string, number>>((acc, f) => {
-    acc[f.severity] = (acc[f.severity] ?? 0) + 1
-    return acc
-  }, {})
-  const parts = (['ERROR', 'WARNING', 'INFO'] as const)
-    .filter((s) => counts[s])
-    .map((s) => `${counts[s]} ${s.toLowerCase()}`)
-  return `semgrep: ${parts.join(', ')}`
-}

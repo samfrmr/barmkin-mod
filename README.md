@@ -47,7 +47,7 @@ While the session is tainted, a `tool.call` hook on Bash denies any command matc
 
 ### MCP tool-poisoning guard
 
-`tool.describe` strips sentences containing instruction-like phrases ("you must", "ignore previous instructions", "never tell the user", etc.) from `mcp__*` tool descriptions before Claude ever reads them, rather than rejecting the whole description outright — a legitimate tool whose description merely mentions a risky word in passing still reads sensibly.
+`tool.describe` strips sentences containing instruction-like phrases ("ignore previous instructions", "never tell the user", "always call", etc.) from `mcp__*` tool descriptions before Claude ever reads them, rather than rejecting the whole description outright — a legitimate tool whose description merely mentions a risky word in passing still reads sensibly. Phrases that are common in legitimate usage notes ("you must", "system prompt") only flag the description in the debug log; the sentence is kept intact.
 
 `tool.call` on `mcp__*` enforces a per-server allowlist from the `mcp_server_allowlist` user-config option. An empty allowlist (the default) allows every server — audit-only, matching the "decide with evidence" posture: most installs don't know their MCP server inventory up front, so the guard doesn't block anything until configured.
 

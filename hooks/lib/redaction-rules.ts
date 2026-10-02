@@ -65,13 +65,13 @@ export const REDACTION_RULES: RedactionRule[] = [
   },
   {
     name: 'bearer-header',
-    pattern: /\bBearer\s+[A-Za-z0-9._-]+\b/gi,
+    pattern: /\bBearer\s+(?=[A-Za-z0-9._~+\/-]*\d)[A-Za-z0-9._~+\/-]{20,}=*/gi,
     category: 'bearer-token',
     example: 'Bearer eyJhbGciOiJIUzI1NiJ9.abc.def',
   },
   {
     name: 'generic-key-env-assignment',
-    pattern: /\b[A-Z0-9_]*_KEY\s*=\s*\S+/g,
+    pattern: /\b[A-Z0-9_]*_KEY\s*=\s*(['"]?)(?=[A-Za-z0-9\/+_-]*\d)[A-Za-z0-9\/+_-]{16,}=*\1/g,
     category: 'env-key',
     example: 'AWS_SECRET_KEY=abcdef0123456789',
   },

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { REDACTION_RULES } from '../hooks/lib/redaction-rules'
-import { redactText, containsAnySecret, containsRedactionPlaceholder } from '../hooks/lib/redaction'
+import { redactText, containsAnySecret } from '../hooks/lib/redaction'
 
 test('redacts every example vector with a numbered placeholder', () => {
   // Each rule is checked against its own example in isolation. Running the
@@ -47,7 +47,28 @@ test('containsAnySecret is safe to call repeatedly (no stale regex lastIndex)', 
   expect(containsAnySecret('nothing to see here', REDACTION_RULES)).toBe(false)
 })
 
-test('containsRedactionPlaceholder recognizes the token shape', () => {
-  expect(containsRedactionPlaceholder('before [REDACTED:aws-key#1] after')).toBe(true)
-  expect(containsRedactionPlaceholder('no placeholder here')).toBe(false)
+test('leaves ordinary source and prose that mention keys or Bearer unchanged', () => {
+  const source = [
+    "CACHE_KEY = 'user'",
+    'PRIMARY_KEY = "id"',
+    'SORT_KEY=name',
+    'Clients use Bearer authentication for every request.',
+    "headers['Authorization'] = 'Bearer ' + token",
+  ].join('\n')
+  const { text, redactedCount } = redactText(source, REDACTION_RULES, {})
+  expect(redactedCount).toBe(0)
+  expect(text).toBe(source)
+})
+
+test('still redacts real secret values assigned to *_KEY or sent as Bearer tokens', () => {
+  const input = [
+    'AWS_SECRET_ACCESS_KEY = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    'STRIPE_SECRET_KEY="sk_live_4eC39HqLyjWDarjtT1zdp7dc"',
+    'Authorization: Bearer 9f8e7d6c5b4a39281706f5e4d3c2b1a0',
+  ].join('\n')
+  const { text, redactedCount } = redactText(input, REDACTION_RULES, {})
+  expect(redactedCount).toBe(3)
+  expect(text).not.toContain('wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')
+  expect(text).not.toContain('sk_live_4eC39HqLyjWDarjtT1zdp7dc')
+  expect(text).not.toContain('9f8e7d6c5b4a39281706f5e4d3c2b1a0')
 })
