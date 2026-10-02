@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { parseSemgrepJson, worstSeverity, formatFindingsContext } from '../hooks/lib/sast'
+import { parseSemgrepJson, worstSeverity, formatFindingsContext, buildSemgrepCandidates } from '../hooks/lib/sast'
 
 const SAMPLE_SEMGREP_JSON = JSON.stringify({
   results: [
@@ -54,4 +54,25 @@ test('formatFindingsContext includes every finding', () => {
 
 test('formatFindingsContext is empty for no findings', () => {
   expect(formatFindingsContext([])).toBe('')
+})
+
+test('buildSemgrepCandidates tries the home-relative pipx/pip --user location first', () => {
+  const candidates = buildSemgrepCandidates('/home/alice')
+  expect(candidates[0]).toBe('/home/alice/.local/bin/semgrep')
+  expect(candidates[candidates.length - 1]).toBe('semgrep')
+})
+
+test('buildSemgrepCandidates strips a trailing slash from the home dir', () => {
+  expect(buildSemgrepCandidates('/home/alice/')[0]).toBe('/home/alice/.local/bin/semgrep')
+})
+
+test('buildSemgrepCandidates skips the home-relative candidate when home is unknown', () => {
+  const candidates = buildSemgrepCandidates('')
+  expect(candidates).not.toContain('/.local/bin/semgrep')
+  expect(candidates[0]).toBe('/usr/local/bin/semgrep')
+})
+
+test('buildSemgrepCandidates always ends with bare semgrep as the last resort', () => {
+  expect(buildSemgrepCandidates('/home/alice').at(-1)).toBe('semgrep')
+  expect(buildSemgrepCandidates('').at(-1)).toBe('semgrep')
 })

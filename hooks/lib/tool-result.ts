@@ -30,3 +30,27 @@ export function appendContext<T extends { context?: unknown }>(result: T, text: 
   const existing = Array.isArray(result?.context) ? result.context : []
   return { ...result, context: [...existing, text] }
 }
+
+// Withholds a tool result's content while keeping it in-schema for that
+// tool. A plain-string result (WebFetch, WebSearch) or an MCP tool's result
+// (string or content-block array both validate against its looser schema)
+// collapses to `{ result: message }`, same as before. Read's result is a
+// typed record (`{ file: { content, filePath, numLines, ... } }`) whose
+// output schema requires that object shape, not a bare string, so denying a
+// Read instead keeps the record and replaces only `file.content` -- this is
+// the only shape this mod denies today that isn't string-or-array.
+export function withholdResult(result: unknown, message: string): { result: unknown } {
+  const value = result && typeof result === 'object' ? (result as { result?: unknown }).result : undefined
+  if (value && typeof value === 'object' && !Array.isArray(value) && 'file' in value) {
+    const file = (value as { file?: unknown }).file
+    if (file && typeof file === 'object' && !Array.isArray(file)) {
+      return {
+        result: {
+          ...value,
+          file: { ...file, content: message, numLines: message.split('\n').length },
+        },
+      }
+    }
+  }
+  return { result: message }
+}
