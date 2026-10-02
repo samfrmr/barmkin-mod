@@ -32,16 +32,22 @@ export function appendContext<T extends { context?: unknown }>(result: T, text: 
 }
 
 // Withholds a tool result's content while keeping it in-schema for that
-// tool. A plain-string result (WebFetch, WebSearch) or an MCP tool's result
-// (string or content-block array both validate against its looser schema)
-// collapses to `{ result: message }`, same as before. Read's result is a
-// typed record whose output schema requires an object, not a bare string.
+// tool. A plain-string result or an MCP tool's result (string or
+// content-block array both validate against its looser schema) collapses to
+// `{ result: message }`. WebFetch and WebSearch return typed records, so
+// only their payload is replaced: WebFetch's `result` text, and WebSearch's
+// `results` array (hits and commentary) becomes `[message]`.
+// Read's result is a typed record whose output schema requires an object.
 // For Read's text variant (`{ type: 'text', file: { content, ... } }`) only
 // `file.content` is replaced. Read's other variants (notebook, pdf, image)
 // carry their payload in `cells` / `base64`, so those are rebuilt as a
 // minimal text record holding just the message, dropping the payload.
 export function withholdResult(result: unknown, message: string): { result: unknown } {
   const value = result && typeof result === 'object' ? (result as { result?: unknown }).result : undefined
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    if (typeof (value as { result?: unknown }).result === 'string') return { result: { ...value, result: message } }
+    if (Array.isArray((value as { results?: unknown }).results)) return { result: { ...value, results: [message] } }
+  }
   if (value && typeof value === 'object' && !Array.isArray(value) && 'file' in value) {
     const { type, file } = value as { type?: unknown; file?: unknown }
     const numLines = message.split('\n').length
