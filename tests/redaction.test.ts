@@ -95,6 +95,9 @@ test('never redacts code expressions assigned to a *_KEY constant', () => {
     'const STORAGE_KEY = `app:v2:${userId}`;',
     "SESSION_KEY = 'prefix_2024_' + user_id",
     'DEPLOY_KEY=$DEPLOY_KEY_FROM_CI_2024',
+    'SSH_KEY="$HOME/.ssh/id_ed25519"',
+    'export AWS_SECRET_KEY="${S3_SECRET_KEY}"',
+    'SSH_KEY="${HOME}/.ssh/id_rsa_2024"',
   ].join('\n')
   const { text, redactedCount } = redactText(source, REDACTION_RULES, {})
   expect(redactedCount).toBe(0)
