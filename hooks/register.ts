@@ -27,7 +27,6 @@ import {
 import {
   buildSystemOneRequest,
   parseSystemOneResponse,
-  redactForClassifier,
   JEV_MODEL_PATTERN,
   type NoulQuestion,
   type SystemOneParseResult,
@@ -75,7 +74,7 @@ const redactionCounters: Record<string, number> = {}
 
 const BREAKER_FAILURE_THRESHOLD = 3
 const BREAKER_COOLDOWN_MS = 60_000
-const JEV_TIMEOUT_MS = 5000
+const JEV_TIMEOUT_MS = 700
 
 let pluginOptions: Record<string, unknown> = {}
 
@@ -125,7 +124,9 @@ const JEV_QUESTIONS: Record<string, NoulQuestion> = {
   },
 }
 
-// Top-level so it may receive `$` directly (validator rule). Never throws:
+// Top-level so it may receive `$` directly (validator rule). The payload is
+// scrubbed with the same REDACTION_RULES as everything else before it leaves
+// for the third-party endpoint. Never throws:
 // every failure path returns { ok: false, reason }, which screenContent
 // treats as "classifier unavailable" and falls back to heuristics -- it
 // never silently treats a failure as a pass.
@@ -134,7 +135,7 @@ async function callJevSystemOne(
   jev: JevOptions,
   rawText: string,
 ): Promise<SystemOneParseResult> {
-  const text = redactForClassifier(rawText).slice(0, 4000)
+  const text = redactText(rawText, REDACTION_RULES).text.slice(0, 4000)
   const body = buildSystemOneRequest(jev.model, { content: text }, JEV_QUESTIONS)
   const controller = new AbortController()
   const timer = $.clock.after(JEV_TIMEOUT_MS, () => controller.abort())
@@ -197,25 +198,20 @@ async function screenContent(
   const breakerUntil = await read($, breakerOpenUntil)
   const canUseJev = jev.baseUrl !== '' && breakerUntil <= now
 
-  let injectionProb: number
-  let credentialProb: number
+  let injectionProb = heuristicInjectionScore(text)
+  let credentialProb = containsAnySecret(text, REDACTION_RULES) ? 0.9 : 0
   let model = 'heuristic'
 
   if (canUseJev) {
     const outcome = await callJevSystemOne($, jev, text)
     if (outcome.ok) {
-      injectionProb = outcome.answers.injection ?? 0
-      credentialProb = outcome.answers.credentials ?? 0
+      injectionProb = Math.max(injectionProb, outcome.answers.injection ?? 0)
+      credentialProb = Math.max(credentialProb, outcome.answers.credentials ?? 0)
       model = outcome.model
       await update($, breakerFailureCount, () => 0)
     } else {
       await recordBreakerFailure($)
-      injectionProb = heuristicInjectionScore(text)
-      credentialProb = containsAnySecret(text, REDACTION_RULES) ? 0.9 : 0
     }
-  } else {
-    injectionProb = heuristicInjectionScore(text)
-    credentialProb = containsAnySecret(text, REDACTION_RULES) ? 0.9 : 0
   }
 
   const composed = classifyContent(injectionProb, credentialProb)
@@ -404,17 +400,22 @@ async function redactionHook($: any, e: any, next: any) {
   let changed = false
   const next_: any = { ...result }
 
-  // Only a plain string result is rewritten in place. A structured result
-  // (MCP content-block arrays, objects) is left as-is here; mcpGuardHook's
-  // classifier screen still taints/withholds those based on the same
-  // extracted text, which covers the injection/credential-presence risk
-  // even though this pass doesn't scrub inline.
+  // A plain string result and the `text` of each block in a content-block
+  // array (the usual MCP shape) are rewritten in place.
   if (typeof result.result === 'string') {
     const { text: redacted, redactedCount } = redactText(result.result, REDACTION_RULES, redactionCounters)
     if (redactedCount > 0) {
       next_.result = redacted
       changed = true
     }
+  } else if (Array.isArray(result.result)) {
+    next_.result = result.result.map((block: any) => {
+      if (!block || typeof block !== 'object' || typeof block.text !== 'string') return block
+      const { text: redacted, redactedCount } = redactText(block.text, REDACTION_RULES, redactionCounters)
+      if (redactedCount === 0) return block
+      changed = true
+      return { ...block, text: redacted }
+    })
   }
 
   if (Array.isArray(result.context)) {
@@ -509,8 +510,7 @@ async function sessionReceiveCatch($: any, e: any, next: any) {
 
 async function sessionSendHook($: any, e: any, next: any) {
   if (typeof e.text !== 'string') return next(e)
-  const { redactedCount } = redactText(e.text, REDACTION_RULES, redactionCounters)
-  if (redactedCount > 0) {
+  if (containsAnySecret(e.text, REDACTION_RULES)) {
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it appears to contain a secret' }
   }
   return next(e)

@@ -31,7 +31,7 @@ A `tool.call` hook registered with no matcher (so it wraps every other `tool.cal
 
 The pattern list (`hooks/lib/redaction-rules.ts`) mirrors the shape of barmkin's `rules.yaml` "Secrets" section (`name`/`pattern`/`example`) plus `jev.go`'s pre-egress `secretPatterns`, unioned by hand. There's no YAML parsing step here (mods have no dependency install and this project stays decoupled from barmkin's repo), so when barmkin's secret rules change, update this list manually and keep the `example` vectors in `tests/redaction.test.ts` in sync.
 
-**Limitation:** only a plain string tool result is rewritten in place. A structured result (an MCP content-block array, for example) isn't scrubbed by this pass, though the content still goes through the injection/credential-presence screen described next.
+**Limitation:** a plain string tool result and the `text` field of each block in a content-block array (the usual MCP result shape) are rewritten in place. Other structured results (arbitrary objects) aren't scrubbed by this pass, though their content still goes through the injection/credential-presence screen described next.
 
 ### Untrusted-content taint + injection screen
 
@@ -69,7 +69,7 @@ This complements Anthropic's `security-guidance` plugin; it doesn't replace it, 
 
 `hooks/lib/system-one-client.ts` builds and strictly validates `POST {base_url}/v1/systemone` requests/responses in the same shape as barmkin's `jev.go`: `{model, state, questions}` in, `{model, answers, usage, id}` out, every `noul` answer checked for type, range, and a pinned `jev-1.13` model spelling. **This is not barmkin's internal gateway** — `base_url` is always operator config pointing at a provider-neutral System One-compatible endpoint (OpenRouter, Vercel AI Gateway, or TypeSafe direct).
 
-Two Noul questions are asked per screen: whether the content tries to instruct the agent, and whether it contains credentials. Composition (`hooks/lib/taint.ts`'s `classifyContent`) only ever tightens — `pass -> escalate -> deny` — mirroring barmkin's `composeOutcome` invariant that **the classifier never permits**.
+Two Noul questions are asked per screen: whether the content tries to instruct the agent, and whether it contains credentials. Composition (`hooks/lib/taint.ts`'s `classifyContent`) only ever tightens — `pass -> escalate -> deny` — mirroring barmkin's `composeOutcome` invariant that **the classifier never permits**. The local heuristic and secret scan always run over the full content, and Jev's answers can only raise those scores, never lower them. Before egress, the content is scrubbed with the same `REDACTION_RULES` used everywhere else and capped at 4000 characters; the request is aborted after 700 ms so a slow endpoint falls back to the local scores (and counts toward the breaker) well inside the hook budget.
 
 **No live Jev endpoint is required.** With `jev_base_url` unset, or after three consecutive classifier failures (a session-scoped breaker opens for 60 seconds), the screen falls back to a small pattern heuristic (`heuristicInjectionScore` in `hooks/lib/taint.ts`) capped below the deny threshold — degraded mode can escalate (taint) but never denies on its own. This is deliberate: the fallback has no calibration behind it, so it only ever gets a second human look via taint, never an automatic block.
 

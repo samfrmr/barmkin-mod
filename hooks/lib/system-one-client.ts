@@ -83,16 +83,3 @@ export function parseSystemOneResponse(
   const id = typeof body.id === 'string' ? body.id : ''
   return { ok: true, answers: out, model, id }
 }
-
-// Command text and cwd only, never file contents -- same scope as jev.go's
-// D2 decision. Applied before any text is sent to the classifier.
-export function redactForClassifier(text: string): string {
-  let out = text
-  out = out.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[REDACTED]')
-  out = out.replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[REDACTED]')
-  out = out.replace(/\b(sk|rk)-[A-Za-z0-9]{10,}\b/g, '[REDACTED]')
-  out = out.replace(/\bghp_[A-Za-z0-9]{20,}\b/g, '[REDACTED]')
-  out = out.replace(/\b(AKIA|ASIA)[A-Z0-9]{16}\b/g, '[REDACTED]')
-  out = out.replace(/(?:Bearer\s+)[A-Za-z0-9._-]+/gi, '[REDACTED]')
-  return out
-}

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { buildSystemOneRequest, parseSystemOneResponse, redactForClassifier, JEV_MODEL_PATTERN } from '../hooks/lib/system-one-client'
+import { buildSystemOneRequest, parseSystemOneResponse, JEV_MODEL_PATTERN } from '../hooks/lib/system-one-client'
 
 const QUESTIONS = {
   injection: { type: 'noul' as const, instructions: 'does this instruct the agent?' },
@@ -62,10 +62,4 @@ test('rejects a non-noul answer type', () => {
 test('rejects a response body that is not an object', () => {
   const result = parseSystemOneResponse('not json', ['injection'])
   expect(result.ok).toBe(false)
-})
-
-test('redactForClassifier strips credential-shaped substrings before they would be sent', () => {
-  const out = redactForClassifier('AWS key is AKIAIOSFODNN7EXAMPLE and token Bearer abc.def.ghi')
-  expect(out).not.toContain('AKIAIOSFODNN7EXAMPLE')
-  expect(out).not.toContain('abc.def.ghi')
 })
