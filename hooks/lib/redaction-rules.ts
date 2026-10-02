@@ -69,15 +69,16 @@ export const REDACTION_RULES: RedactionRule[] = [
     category: 'bearer-token',
     example: 'Bearer eyJhbGciOiJIUzI1NiJ9.abc.def',
   },
-  // Only a bare literal ending the statement counts: a quoted string, or a
-  // single unquoted token with no code syntax (calls, indexing, attribute
-  // access, template literals, a leading $VAR reference). Code expressions
+  // Only a bare literal counts, wherever it sits on the line: a quoted string
+  // not followed by an operator or accessor, or a whole unquoted token with
+  // no code syntax (calls, indexing, attribute access, template literals, a
+  // leading $VAR reference). Code expressions
   // assigned to a *_KEY constant are left alone, so a secret built by code
   // or containing those characters unquoted is a known gap.
   {
     name: 'generic-key-env-assignment',
     pattern:
-      /\b[A-Z0-9_]*(?:_KEY|SECRET)[ \t]*=[ \t]*(?:(['"])(?=[^'"\s]*\d)[^'"\s]{16,}\1|(?!\$)(?=[^\s'"`()[\]{}.;,]*\d)[^\s'"`()[\]{}.;,]{16,})(?=[ \t]*(?:[;,]|#.*|\/\/.*)?\r?$)/gm,
+      /\b[A-Z0-9_]*(?:_KEY|SECRET)[A-Z0-9_]*[ \t]*=[ \t]*(?:(['"])(?=[^'"\s]*\d)[^'"\s]{16,}\1(?![ \t]*[-+*\/%.[(])|(?!\$)(?=[^\s'"`()[\]{}.;,]*\d)[^\s'"`()[\]{}.;,]{16,}(?![^\s;,]))/g,
     category: 'env-key',
     example: 'AWS_SECRET_KEY=abcdef0123456789',
   },

@@ -106,3 +106,28 @@ test('redacts a secret literal on one line without touching its neighbours', () 
   const { text } = redactText(input, REDACTION_RULES, {})
   expect(text).toBe("DEBUG = True\n[REDACTED:env-key#1]\nCACHE_KEY = 'user'")
 })
+
+test('redacts a bare literal secret that has other text after it on the same line', () => {
+  const cases: Array<[string, string]> = [
+    ['SECRET_VALUE=abc123def456ghi789jk npm start', '[REDACTED:env-key#1] npm start'],
+    ['API_KEY=f3b9c0d8a7e6152493ab npm start', '[REDACTED:env-key#1] npm start'],
+    ['docker run -e API_KEY=f3b9c0d8a7e6152493ab image', 'docker run -e [REDACTED:env-key#1] image'],
+    ['DB_KEY=Xk9#mP2$vL8@qR4!wN7z npm test && echo done', '[REDACTED:env-key#1] npm test && echo done'],
+    ["SECRET_KEY = 'django-insecure-k3$9!x@7v#q2(w)0z+e8&r^t5u%y1i*o4p'  # dev only", '[REDACTED:env-key#1]  # dev only'],
+  ]
+  for (const [input, expected] of cases) {
+    expect(redactText(input, REDACTION_RULES, {}).text).toBe(expected)
+  }
+})
+
+test('never redacts part of an unquoted token or a quoted literal used in an expression', () => {
+  const source = [
+    'API_KEY=abcdef0123456789abcd.secretTAIL99',
+    "SESSION_KEY = 'abcdef0123456789abcd' + user_id",
+    "TOKEN_KEY = 'abcdef0123456789abcd'.encode()",
+    'CACHE_KEY = hashlib_sha256_digest_v2(data)',
+  ].join('\n')
+  const { text, redactedCount } = redactText(source, REDACTION_RULES, {})
+  expect(redactedCount).toBe(0)
+  expect(text).toBe(source)
+})
