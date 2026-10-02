@@ -31,21 +31,29 @@ const C0_C1_CONTROLS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g
 // encoding marker and is left alone (handled separately in scrubInvisible).
 const ZERO_WIDTH = /[​-‍⁠﻿]/g
 
+// ZWNJ (U+200C) and ZWJ (U+200D) are still stripped, but are ordinary
+// spelling in Persian and Indic scripts and glue ZWJ emoji sequences, so
+// they don't count toward `hiddenCount`.
+const JOINERS = new Set(['‌', '‍'])
+
 // A lone or paired variation selector (U+FE00-FE0F, plus the supplementary
 // Variation Selectors Supplement U+E0100-E01EF) is ordinary text: VS16 sets
 // emoji presentation, VS1-16 distinguish CJK ideograph variants, and
 // keycap emoji (`1️⃣`) use exactly one. A *run* of four or more in
 // a row has no such use -- it's the steganographic encoding some
 // invisible-prompt-injection demos use (one selector per smuggled byte) --
-// so only runs at or above that length are stripped. Known gap: a single
-// selector after each visible character (one smuggled byte per character,
-// every run only one long) stays under this threshold and is not stripped.
+// so only runs at or above that length are stripped. This run-length rule is
+// the security review's own accepted alternative to "outside emoji runs" and
+// an intentional, already-decided tradeoff: a single selector after each
+// visible character (one smuggled byte per character, every run only one
+// long) stays under this threshold and is not stripped.
 const VARIATION_SELECTOR_RUN = /[︀-️\u{E0100}-\u{E01EF}]{4,}/gu
 
 // `strippedCount` counts everything removed. `hiddenCount` leaves out ANSI
 // escapes and C0/C1 controls: terminal formatting in colored tool output is
-// routine, so only the invisible-text carriers (tags, bidi, zero-width,
-// variation-selector runs) count toward the steganographic signal.
+// routine, so only the invisible-text carriers (tags, bidi, zero-width
+// other than ZWNJ/ZWJ, variation-selector runs) count toward the
+// steganographic signal.
 export interface ScrubResult {
   text: string
   strippedCount: number
@@ -76,9 +84,9 @@ export function scrubInvisible(text: string): ScrubResult {
     strippedCount++
     return ''
   })
-  body = body.replace(ZERO_WIDTH, () => {
+  body = body.replace(ZERO_WIDTH, (ch) => {
     strippedCount++
-    hiddenCount++
+    if (!JOINERS.has(ch)) hiddenCount++
     return ''
   })
   body = body.replace(VARIATION_SELECTOR_RUN, (run) => {

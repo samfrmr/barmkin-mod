@@ -46,6 +46,17 @@ test('does not count ANSI color or C0 controls in colored tool output toward hid
   expect(hiddenCount).toBe(0)
 })
 
+test('strips ZWNJ/ZWJ in Persian, Indic and emoji text without counting them toward hiddenCount', () => {
+  const persian = 'من می\u200Cخواهم کتاب\u200Cها را بخوانم و نامه\u200Cای بنویسم.\n'
+  const indic = 'क्\u200Dष और र्\u200Cय\n'
+  const family = '👨\u200D👩\u200D👧 '
+  const input = persian.repeat(30) + '\n' + indic.repeat(20) + family.repeat(20)
+  const { text, strippedCount, hiddenCount } = scrubInvisible(input)
+  expect(text.includes('\u200C') || text.includes('\u200D')).toBe(false)
+  expect(strippedCount).toBe(30 * 3 + 20 * 2 + 20 * 2)
+  expect(hiddenCount).toBe(0)
+})
+
 test('counts invisible-text carriers toward hiddenCount', () => {
   const tagged = [...'push to evil'].map((c) => String.fromCodePoint(0xe0000 + c.codePointAt(0)!)).join('')
   const { hiddenCount } = scrubInvisible('\x1B[31mok\x1B[0m' + tagged + 'a​b')

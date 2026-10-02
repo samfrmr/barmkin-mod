@@ -89,9 +89,9 @@ const BREAKER_FAILURE_THRESHOLD = 3
 const BREAKER_COOLDOWN_MS = 60_000
 const JEV_TIMEOUT_MS = 700
 // More than this many invisible-text carriers (scrubInvisible's
-// `hiddenCount`, which leaves out ANSI/C0 terminal formatting) stripped from
-// one piece of content taints the session: ordinary multilingual text and
-// ZWJ emoji carry a few ZWNJ/ZWJ; a payload smuggled one invisible code
+// `hiddenCount`, which leaves out ANSI/C0 terminal formatting and the
+// ZWNJ/ZWJ of ordinary Persian/Indic text and ZWJ emoji) stripped from one
+// piece of content taints the session: a payload smuggled one invisible code
 // point per byte runs well past this.
 const INVISIBLE_CHAR_TAINT_THRESHOLD = 32
 // Caps the audit log file at roughly this many rows (~200-300 KB of JSONL)
