@@ -213,7 +213,7 @@ async function taintForScrub($: any, hiddenCount: number, source: string): Promi
   try {
     await markTainted($, 'stripped ' + hiddenCount + ' invisible character(s) from ' + source)
   } catch {
-    return
+    $.ui.log('barmkin-mod: could not record taint for ' + source + ' (' + hiddenCount + ' invisible character(s) stripped)')
   }
 }
 
