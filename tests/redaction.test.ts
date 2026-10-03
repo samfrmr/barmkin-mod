@@ -112,6 +112,13 @@ test('never redacts code expressions assigned to a *_KEY constant', () => {
   expect(text).toBe(source)
 })
 
+test('redacts a short sk- or rk- key with a 10-character body', () => {
+  const source = 'sk-ABCDEFGHIJ123 and rk-ABCDEFGHIJ123'
+  const { text, redactedCount } = redactText(source, REDACTION_RULES, {})
+  expect(redactedCount).toBe(2)
+  expect(text).not.toContain('ABCDEFGHIJ123')
+})
+
 test('redacts a secret whose name has no underscore before the keyword or ends in a digit', () => {
   const value = 'xK9mP2qL7vN4wR8tY3uI'
   const source = [`JWTSECRET=${value}`, `API_KEY2=${value}`, `SECRET2=${value}`].join('\n')

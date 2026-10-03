@@ -221,12 +221,15 @@ function appendAudit($: any, entry: Omit<AuditEntry, 'ts' | 'session'>): void {
 // when a scrub stripped more than INVISIBLE_CHAR_TAINT_THRESHOLD characters.
 async function taintForScrub($: any, hiddenCount: number, source: string): Promise<void> {
   if (hiddenCount <= INVISIBLE_CHAR_TAINT_THRESHOLD) return
-  await update($, tainted, () => true)
-  await update(
-    $,
-    taintReason,
-    () => 'stripped ' + hiddenCount + ' invisible character(s) from ' + source,
-  )
+  try {
+    await update($, tainted, () => true)
+    await update(
+      $,
+      taintReason,
+      () => 'stripped ' + hiddenCount + ' invisible character(s) from ' + source,
+    )
+  } catch {
+  }
   appendAudit($, {
     event: 'scrub',
     tool: source,
@@ -389,7 +392,7 @@ async function toolDescribeHook($: any, e: any, next: any) {
   if (typeof description !== 'string') return current
 
   const scrubbed = scrubInvisible(description)
-  await taintForScrub($, scrubbed.hiddenCount, 'an MCP tool description (' + e.tool + ')')
+  await taintForScrub($, scrubbed.hiddenCount, 'an MCP tool description')
 
   const { description: cleaned, flagged } = neutralizeDescription(scrubbed.text)
   if (!flagged) {
@@ -405,7 +408,7 @@ async function mcpGuardHook($: any, e: any, next: any) {
   if (serverName) {
     const allowlist = parseAllowlist(pluginOptions.mcp_server_allowlist)
     if (!isAllowedServer(serverName, allowlist)) {
-      appendAudit($, { event: 'mcp-allowlist', tool: e.tool, decision: 'deny', reason: 'server not on allowlist' })
+      appendAudit($, { event: 'mcp-allowlist', tool: 'mcp', decision: 'deny', reason: 'server not on allowlist' })
       return { deny: 'barmkin-mod: MCP server "' + serverName + '" is not on the allowlist' }
     }
   }
@@ -415,7 +418,7 @@ async function mcpGuardHook($: any, e: any, next: any) {
 
   const text = extractResultText(result)
   if (!text) return result
-  const verdict = await screenContent($, text, 'mcp:' + (serverName ?? e.tool), e.tool_use_id)
+  const verdict = await screenContent($, text, 'mcp', e.tool_use_id)
   if (verdict.decision === 'deny') {
     return withholdResult(result, 'barmkin-mod: withheld this MCP result (' + verdict.reason + '). Ask the user before retrying.')
   }
@@ -548,7 +551,7 @@ async function redactionHook($: any, e: any, next: any) {
     next_.context = redactedContext
   }
 
-  await taintForScrub($, hiddenCount, 'tool:' + e.tool)
+  await taintForScrub($, hiddenCount, 'tool:' + (typeof e.tool === 'string' && parseMcpServerName(e.tool) ? 'mcp' : e.tool))
 
   return changed ? next_ : result
 }

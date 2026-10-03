@@ -90,12 +90,12 @@ export const REDACTION_RULES: RedactionRule[] = [
     category: 'api-key',
     example: 'sk-or-v1-' + 'a1b2c3d4e5f6'.repeat(3),
   },
-  // Legacy OpenAI key shape: no hyphens in the body, so this can't swallow
-  // the hyphenated vendor prefixes above (their bodies break the run of
-  // alphanumerics at the first internal hyphen, well short of 20 chars).
+  // Legacy OpenAI (and rk-) key shape: no hyphens in the body, so this can't
+  // swallow the hyphenated vendor prefixes above (their first segments are
+  // shorter than 10 characters, so the alphanumeric run ends before the floor).
   {
     name: 'openai-legacy-key',
-    pattern: /\bsk-[A-Za-z0-9]{20,}\b/g,
+    pattern: /\b(?:sk|rk)-[A-Za-z0-9]{10,}\b/g,
     category: 'api-key',
     example: 'sk-ABCDEFGHIJ1234567890',
   },
