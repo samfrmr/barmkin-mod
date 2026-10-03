@@ -463,10 +463,22 @@ async function taintScreenCatch($: any, e: any, next: any) {
 // any context a later hook in this file added -- before Claude reads it).
 // ---------------------------------------------------------------------------
 
+// Read's image variant carries its payload as base64, which the plaintext
+// secret rules never match, so that one field is left out of the scan and the
+// budget. Gated on the Read tool so an MCP result cannot hide plaintext there.
+function readImageBase64(e: any, result: any): string | undefined {
+  const payload = result.result
+  if (e.tool !== 'Read' || !payload || typeof payload !== 'object') return undefined
+  if (payload.type !== 'image' || typeof payload.base64 !== 'string') return undefined
+  return payload.base64
+}
+
 async function redactionHook($: any, e: any, next: any) {
   const result = await next(e)
   if (!result || result.deny) return result
-  if (exceedsResultBudget(result)) {
+  const imageBase64 = readImageBase64(e, result)
+  const scannable = imageBase64 === undefined ? result : { ...result, result: { ...result.result, base64: undefined } }
+  if (exceedsResultBudget(scannable)) {
     return { deny: 'barmkin-mod: this tool result is larger than the redaction scan budget, so it was withheld' }
   }
 
@@ -496,7 +508,8 @@ async function redactionHook($: any, e: any, next: any) {
     }
     return value
   }
-  if ('result' in result) next_.result = redactValue(result.result)
+  if ('result' in result) next_.result = redactValue(scannable.result)
+  if (imageBase64 !== undefined) next_.result = { ...next_.result, base64: imageBase64 }
   const hiddenInResult = hiddenCount
   hiddenCount = 0
   if (typeof result.text === 'string') next_.text = redactValue(result.text)

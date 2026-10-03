@@ -13,11 +13,11 @@ export interface RedactionResult {
 // guard budget. Longer text is withheld as a whole rather than scanned.
 export const MAX_SCANNED_CHARS = 16 * 1024
 
-// Total text one tool result may carry. Each string is capped at
-// MAX_SCANNED_CHARS, but a result of many such strings would multiply the
-// per-string cost, so the sum is capped too: 64 KiB bounds the worst case at
-// about four times the single-string figure above (about 200 ms per
-// quadratic rule).
+// Total text one tool result may carry. The worst case is a result of
+// strings that each sit at the per-string cap: 64 KiB / 16 KiB = 4 strings,
+// each about 46 ms per quadratic rule (the value-side generic-key rule is the
+// only quadratic one measured), so 4 x 46 ms = about 185 ms per tool result,
+// under the 1-second guard budget. That computed bound is the accepted design.
 const MAX_RESULT_CHARS = 64 * 1024
 
 function textLength(value: unknown): number {
