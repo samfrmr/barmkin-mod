@@ -34,6 +34,14 @@ test('numbers placeholders per category across repeated calls', () => {
   expect(second.text).toContain('[REDACTED:aws-key#2]')
 })
 
+test('keeps the aws-key label for an AKIA key assigned to AWS_ACCESS_KEY_ID', () => {
+  for (const line of ['export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE', 'AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"']) {
+    const { text, redactedCount } = redactText(line, REDACTION_RULES, {})
+    expect(redactedCount).toBe(1)
+    expect(text).toBe(line.replace('AKIAIOSFODNN7EXAMPLE', '[REDACTED:aws-key#1]'))
+  }
+})
+
 test('leaves ordinary text untouched', () => {
   const { text, redactedCount } = redactText('ls -la /tmp', REDACTION_RULES, {})
   expect(redactedCount).toBe(0)

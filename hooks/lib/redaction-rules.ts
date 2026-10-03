@@ -27,6 +27,14 @@ export const REDACTION_RULES: RedactionRule[] = [
     category: 'jwt',
     example: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
   },
+  // Ordered ahead of generic-key-env-assignment so AWS_ACCESS_KEY_ID=AKIA...
+  // keeps its aws-key label; that rule skips the resulting placeholder.
+  {
+    name: 'aws-access-key',
+    pattern: /\b(AKIA|ASIA)[A-Z0-9]{16}\b/g,
+    category: 'aws-key',
+    example: 'AKIAIOSFODNN7EXAMPLE',
+  },
   // Ordered ahead of the vendor-prefix rules below on purpose: a vendor key
   // assigned to a *_KEY=/*_SECRET=/etc. name (e.g. STRIPE_SECRET_KEY="sk_live_...")
   // should redact once, as this rule's whole quoted/bare value, rather than
@@ -48,7 +56,7 @@ export const REDACTION_RULES: RedactionRule[] = [
   {
     name: 'generic-key-env-assignment',
     pattern:
-      /\b[A-Z0-9_]*(?:_KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|_PAT)[A-Z0-9_]*[ \t]*=[ \t]*(?:(['"])(?!\$)(?![^'"\s]*\$\{)(?=[^'"\s]*\d)[^'"\s]{16,}\1(?![ \t]*[-+*\/%.[(])|(?!\$)(?=[^\s'"`()[\]{}.;,]*\d)[^\s'"`()[\]{}.;,]{16,}(?![^\s;,'"`]))/g,
+      /\b[A-Z0-9_]*(?:_KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|_PAT)[A-Z0-9_]*[ \t]*=[ \t]*(?:(['"])(?!\$|\[REDACTED:)(?![^'"\s]*\$\{)(?=[^'"\s]*\d)[^'"\s]{16,}\1(?![ \t]*[-+*\/%.[(])|(?!\$)(?=[^\s'"`()[\]{}.;,]*\d)[^\s'"`()[\]{}.;,]{16,}(?![^\s;,'"`]))/g,
     category: 'env-key',
     example: 'AWS_SECRET_KEY=abcdef0123456789',
   },
@@ -102,12 +110,6 @@ export const REDACTION_RULES: RedactionRule[] = [
     pattern: /\bgithub_pat_[A-Za-z0-9_]{22,}\b/g,
     category: 'github-token',
     example: 'github_pat_' + '11AAAAAAA0'.repeat(3),
-  },
-  {
-    name: 'aws-access-key',
-    pattern: /\b(AKIA|ASIA)[A-Z0-9]{16}\b/g,
-    category: 'aws-key',
-    example: 'AKIAIOSFODNN7EXAMPLE',
   },
   {
     name: 'stripe-key',
