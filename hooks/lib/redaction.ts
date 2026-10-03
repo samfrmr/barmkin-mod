@@ -11,7 +11,11 @@ export interface RedactionResult {
 // 70 KB of repeated `SECRET=` takes about 0.9 s, so 16 KiB costs about 50 ms
 // per such rule. That keeps the full set comfortably inside the 1-second
 // guard budget. Longer text is withheld as a whole rather than scanned.
-export const MAX_SCANNED_CHARS = 16 * 1024
+const MAX_SCANNED_CHARS = 16 * 1024
+
+export function exceedsScanLimit(text: string): boolean {
+  return text.length > MAX_SCANNED_CHARS
+}
 
 // Total text one tool result may carry. The worst case is a result of
 // strings that each sit at the per-string cap: 64 KiB / 16 KiB = 4 strings,
@@ -20,17 +24,21 @@ export const MAX_SCANNED_CHARS = 16 * 1024
 // under the 1-second guard budget. That computed bound is the accepted design.
 const MAX_RESULT_CHARS = 64 * 1024
 
-function textLength(value: unknown): number {
-  if (typeof value === 'string') return value.length
-  if (Array.isArray(value)) return value.reduce((total: number, item) => total + textLength(item), 0)
-  if (value && typeof value === 'object') {
-    return Object.values(value).reduce((total: number, item) => total + textLength(item), 0)
-  }
-  return 0
+function textTotals(value: unknown): { total: number; longest: number } {
+  if (typeof value === 'string') return { total: value.length, longest: value.length }
+  const children = Array.isArray(value) ? value : value && typeof value === 'object' ? Object.values(value) : []
+  return children.reduce(
+    (acc: { total: number; longest: number }, child) => {
+      const sub = textTotals(child)
+      return { total: acc.total + sub.total, longest: Math.max(acc.longest, sub.longest) }
+    },
+    { total: 0, longest: 0 },
+  )
 }
 
 export function exceedsResultBudget(result: unknown): boolean {
-  return textLength(result) > MAX_RESULT_CHARS
+  const { total, longest } = textTotals(result)
+  return total > MAX_RESULT_CHARS || longest > MAX_SCANNED_CHARS
 }
 
 // Replaces every secret match with a placeholder token, numbered per
@@ -44,7 +52,7 @@ export function redactText(
   rules: RedactionRule[],
   counters: Record<string, number> = {},
 ): RedactionResult {
-  if (text.length > MAX_SCANNED_CHARS) {
+  if (exceedsScanLimit(text)) {
     counters.oversized = (counters.oversized ?? 0) + 1
     return { text: `[REDACTED:oversized#${counters.oversized}]`, redactedCount: 1, categories: ['oversized'] }
   }
@@ -69,7 +77,7 @@ export function redactText(
 // the same object). Reset it before each test so this can be called
 // repeatedly without alternating false negatives.
 export function containsAnySecret(text: string, rules: RedactionRule[]): boolean {
-  if (text.length > MAX_SCANNED_CHARS) return false
+  if (exceedsScanLimit(text)) return false
   return rules.some((rule) => {
     rule.pattern.lastIndex = 0
     return rule.pattern.test(text)

@@ -16,7 +16,7 @@
 // static-analysis rules for the mods API.
 import { atom, read, update } from 'claude-code'
 import { REDACTION_RULES } from './lib/redaction-rules'
-import { redactText, containsAnySecret, exceedsResultBudget, MAX_SCANNED_CHARS } from './lib/redaction'
+import { redactText, containsAnySecret, exceedsResultBudget, exceedsScanLimit } from './lib/redaction'
 import { scrubInvisible } from './lib/scrub'
 import {
   isOutwardEffectCommand,
@@ -227,7 +227,7 @@ async function screenContent(
   const jev = getJevOptions(pluginOptions)
   const now = Date.now()
   const breakerUntil = await read($, breakerOpenUntil)
-  const canUseJev = jev.baseUrl !== '' && breakerUntil <= now
+  const canUseJev = jev.baseUrl !== '' && breakerUntil <= now && !exceedsScanLimit(text)
 
   const local: ScoreSource = {
     model: 'heuristic',
@@ -301,6 +301,7 @@ async function sessionStartHook($: any, e: any, next: any) {
   } catch {
     // $.settings.read() unavailable or refused on this build; checkPosture reports it as unverified
   }
+  if (typeof merged !== 'object') merged = null
   let policy: Record<string, unknown> | null = null
   try {
     policy = await $.settings.read({ source: 'policy' })
@@ -655,6 +656,9 @@ async function sessionReceiveHook($: any, e: any, next: any) {
 
   const scrubbed = scrubInvisible(e.text)
   void taintForScrub($, scrubbed.hiddenCount, 'an inbound peer message')
+  if (exceedsScanLimit(scrubbed.text)) {
+    return { consumed: 'barmkin-mod: withheld an inbound message (it is longer than the 16 KiB scan limit)' }
+  }
 
   const verdict = await screenContent($, scrubbed.text, 'peer:' + (e.origin?.kind ?? 'unknown'), undefined)
   if (verdict.decision === 'deny') {
@@ -669,7 +673,7 @@ async function sessionReceiveCatch($: any, e: any, next: any) {
 
 async function sessionSendHook($: any, e: any, next: any) {
   if (typeof e.text !== 'string') return next(e)
-  if (e.text.length > MAX_SCANNED_CHARS) {
+  if (exceedsScanLimit(e.text)) {
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it is longer than the 16 KiB scan limit' }
   }
   if (containsAnySecret(e.text, REDACTION_RULES)) {
