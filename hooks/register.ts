@@ -93,7 +93,7 @@ const JEV_TIMEOUT_MS = 700
 // point per byte runs well past this.
 const INVISIBLE_CHAR_TAINT_THRESHOLD = 32
 // This plugin's own manifest name, as it appears before the `@marketplace`
-// suffix in a managed prependPlugins entry (R16's posture check).
+// suffix in a managed prependPlugins entry (the session.start posture check).
 const PLUGIN_NAME = 'barmkin-mod'
 
 let pluginOptions: Record<string, unknown> = {}
@@ -186,7 +186,7 @@ async function callJevSystemOne(
   }
 }
 
-// Shared by every R7 call site (the outermost redaction pass, tool.describe,
+// Shared by every scrubInvisible call site (the outermost redaction pass, tool.describe,
 // and session.receive): taints the session when a scrub stripped more than
 // INVISIBLE_CHAR_TAINT_THRESHOLD characters.
 // The first reason recorded for a session wins, so a later taint never
@@ -521,7 +521,7 @@ async function redactionHook($: any, e: any, next: any) {
   // typed record (Bash `{stdout, stderr, ...}`, Read `{file: {content}}`).
   // The record keeps its shape so core's output-schema validation passes.
   // Core's model-visible rendering in `text` is redacted the same way.
-  // Scrubbed (R7) before redaction: a zero-width character spliced into a
+  // Scrubbed before redaction: a zero-width character spliced into a
   // token shouldn't be able to help it dodge a secret pattern either.
   const redactValue = (value: unknown): unknown => {
     if (typeof value === 'string') {

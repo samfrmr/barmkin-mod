@@ -187,16 +187,15 @@ test('never redacts part of an unquoted token or a quoted literal used in an exp
   expect(text).toBe(source)
 })
 
-// R1 security-review corpus (data/barmkin-mod-security-review/report.md F2,
-// section 1.4): one vector per category the review's node probe ran against
-// main's rules. 14 of 19 flip from missed to redacted with this refresh;
-// 2 are baselines that already redacted on main, and the remaining 3 are
-// documented, deliberate gaps (see the final block) -- not silently dropped,
-// since inventing an unprincipled regex for a bare high-entropy string
-// risks corrupting ordinary text (hashes, ids) with no real detection
-// benefit. The baseline vectors below are here only so a future rule-set
-// change can't silently regress them.
-test('F2 corpus: vendor-prefix vectors the refresh newly catches', () => {
+// 19-sample corpus of vendor-prefix, assignment-name and known-gap vectors,
+// one per category the rule set covers. 14 of 19 are missed by main's rules
+// and redacted by this rule set; 2 are baselines that already redacted on
+// main, and the remaining 3 are documented, deliberate gaps (see the final
+// block) -- not silently dropped, since inventing an unprincipled regex for a
+// bare high-entropy string risks corrupting ordinary text (hashes, ids) with
+// no real detection benefit. The baseline vectors below are here only so a
+// future rule-set change can't silently regress them.
+test('corpus: vendor-prefix vectors the rule set newly catches', () => {
   const vectors: Array<[string, string]> = [
     ['anthropic sk-ant-api03 bare', 'sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-ABCDEFGHIJKLMNOPQRSTUVWXYZ'],
     [
@@ -225,7 +224,7 @@ test('F2 corpus: vendor-prefix vectors the refresh newly catches', () => {
   }
 })
 
-test('F2 corpus: baseline vectors that already redacted on main keep redacting', () => {
+test('corpus: baseline vectors that already redacted on main keep redacting', () => {
   const vectors: Array<[string, string]> = [
     ['openai legacy sk-', 'sk-ABCDEFGHIJ1234567890'],
     ['ANTHROPIC_API_KEY env (via *_KEY=)', 'ANTHROPIC_API_KEY=abcdef0123456789abcd'],
@@ -236,13 +235,12 @@ test('F2 corpus: baseline vectors that already redacted on main keep redacting',
   }
 })
 
-// Deliberately not fixed by R1: each needs either decoding (base64) or a
+// Deliberately not covered: each needs either decoding (base64) or a
 // bare-high-entropy-string heuristic with no safe signal to anchor on (no
-// vendor prefix, no *_KEY=-style name, no reliable shape), which the
-// review's design sketch for R1 does not specify and which would risk
-// flagging ordinary hashes, ids and tokens as secrets. Tracked as open gaps
-// (F2), not silently dropped.
-test('F2 corpus: known gaps this refresh does not close', () => {
+// vendor prefix, no *_KEY=-style name, no reliable shape), which would risk
+// flagging ordinary hashes, ids and tokens as secrets. Tracked as open gaps,
+// not silently dropped.
+test('corpus: known gaps this rule set does not close', () => {
   const bareAwsSecret = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
   expect(containsAnySecret(bareAwsSecret, REDACTION_RULES)).toBe(false)
 

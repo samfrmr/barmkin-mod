@@ -43,8 +43,8 @@ const JOINERS = new Set(['‌', '‍'])
 // a row has no such use -- it's the steganographic encoding some
 // invisible-prompt-injection demos use (one selector per smuggled byte) --
 // so only runs at or above that length are stripped. This run-length rule is
-// the security review's own accepted alternative to "outside emoji runs" and
-// an intentional, already-decided tradeoff: a single selector after each
+// an intentional tradeoff, not a stripping of every selector outside an emoji
+// sequence: a single selector after each
 // visible character (one smuggled byte per character, every run only one
 // long) stays under this threshold and is not stripped.
 const VARIATION_SELECTOR_RUN = /[︀-️\u{E0100}-\u{E01EF}]{4,}/gu

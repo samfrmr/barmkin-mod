@@ -1,7 +1,8 @@
-// Pure helpers for the session.start posture self-check (R16; security
-// review F4 and the C1/C5 default-posture calls). Takes already-read
-// settings objects and this plugin's own manifest name so it can be unit
-// tested without a live $.settings.read() call.
+// Pure helpers for the session.start posture self-check: seating in managed
+// prependPlugins, plus the sandbox, permission-mode, skill-shell and MCP
+// allowlist defaults. Takes already-read settings objects and this plugin's
+// own manifest name so it can be unit tested without a live $.settings.read()
+// call.
 
 // `prependPlugins`/`appendPlugins` are a managed/policy-only construct (see
 // sec-default's own README): a person's settings can't set or override
