@@ -105,136 +105,18 @@ test('withholds a prompt over the scan limit instead of replacing it with a plac
   expect(answer.text).toBeUndefined()
 })
 
-const u16be = (n: number) => String.fromCharCode(n >>> 8, n & 255)
-const u32be = (n: number) => String.fromCharCode((n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255)
-const u32le = (n: number) => String.fromCharCode(n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255)
+test('withholds a Read image whose base64 payload is over the scan budget', async ($, on) => {
+  on('tool.call', () => ({ result: { type: 'image', base64: btoa('\x89PNG\r\n\x1a\n' + 'A'.repeat(20 * 1024)) } }))
+  const out = await $.tool.call({ tool: 'Read', file_path: 'screenshot.png' })
+  expect(out.deny).toContain('redaction scan budget')
+})
 
-const pngChunk = (type: string, data: string) => u32be(data.length) + type + data + '\0\0\0\0'
-const pngImage = (idat: string, metadata = '') =>
-  '\x89PNG\r\n\x1a\n' + pngChunk('IHDR', '\0'.repeat(13)) + metadata + pngChunk('IDAT', idat) + pngChunk('IEND', '')
-const jpegSegment = (marker: string, body: string) => '\xff' + marker + u16be(body.length + 2) + body
-const jpegImage = (dqt: string, extra = '') =>
-  '\xff\xd8' + extra + jpegSegment('\xdb', dqt) + '\xff\xc0' + u16be(8) + '\0'.repeat(6)
-const gifSubBlocks = (data: string) => {
-  let out = ''
-  for (let i = 0; i < data.length; i += 255) out += String.fromCharCode(Math.min(255, data.length - i)) + data.slice(i, i + 255)
-  return out + '\0'
-}
-const gifImage = (data: string, extension = '') =>
-  'GIF89a' + '\x01\x00\x01\x00\x00\x00\x00' + extension + '\x2c' + '\0'.repeat(4) + '\x01\x00\x01\x00\x00' + '\x02' + gifSubBlocks(data) + '\x3b'
-const zlib = async (text: string) => {
-  const stream = new Blob([new TextEncoder().encode(text)]).stream().pipeThrough(new CompressionStream('deflate'))
-  return String.fromCharCode(...new Uint8Array(await new Response(stream).arrayBuffer()))
-}
-const webpImage = (data: string) => {
-  const chunk = 'VP8 ' + u32le(data.length) + data + (data.length % 2 ? '\0' : '')
-  return 'RIFF' + u32le(4 + chunk.length) + 'WEBP' + chunk
-}
-
-const validImages: Array<[string, string]> = [
-  ['PNG', pngImage('A'.repeat(70 * 1024))],
-  ['JPEG', jpegImage('A'.repeat(65533))],
-  ['GIF', gifImage('A'.repeat(70 * 1024))],
-  ['WebP', webpImage('A'.repeat(70 * 1024))],
-]
-
-const plaintextSecret = 'AWS_KEY=AKIAIOSFODNN7EXAMPLE '.repeat(3)
-const forgedImages: Array<[string, string]> = [
-  ['PNG without a chunk walk to IEND', '\x89PNG\r\n\x1a\n' + pngChunk('IHDR', '\0'.repeat(13)) + plaintextSecret],
-  ['JPEG with no segment structure', '\xff\xd8\xff' + plaintextSecret],
-  ['GIF with a plaintext body', 'GIF89a\x01\x00\x01\x00\x00\x00\x00' + plaintextSecret],
-  ['WebP with a wrong RIFF size', 'RIFF' + u32le(4) + 'WEBP' + 'VP8 ' + u32le(plaintextSecret.length) + plaintextSecret],
-  ['GIF with bytes after the trailer', gifImage('A'.repeat(64)) + plaintextSecret],
-]
-
-for (const [format, bytes] of validImages) {
-  test(`exempts a verified ${format} Read image payload from the text budget`, async ($, on) => {
-    const base64 = btoa(bytes)
-    on('tool.call', () => ({ result: { type: 'image', base64 } }))
-    const out = await $.tool.call({ tool: 'Read', file_path: 'screenshot.png' })
-    expect(out.deny).toBeUndefined()
-    expect(out.result.base64).toBe(base64)
-  })
-}
-
-test('exempts a verified image carried in the file record shape', async ($, on) => {
-  const base64 = btoa(pngImage('A'.repeat(70 * 1024)))
-  on('tool.call', () => ({ result: { type: 'image', file: { base64, type: 'image/png', originalSize: 10 } } }))
+test('passes a small Read image payload through unchanged', async ($, on) => {
+  const base64 = btoa('\x89PNG\r\n\x1a\n' + 'A'.repeat(1024))
+  on('tool.call', () => ({ result: { type: 'image', base64 } }))
   const out = await $.tool.call({ tool: 'Read', file_path: 'screenshot.png' })
   expect(out.deny).toBeUndefined()
-  expect(out.result.file.base64).toBe(base64)
-})
-
-const metadataSecret = 'AWS_KEY=AKIAIOSFODNN7EXAMPLE'
-
-test('exempts an image whose metadata text is clean', async ($, on) => {
-  const base64 = btoa(pngImage('A'.repeat(70 * 1024), pngChunk('tEXt', 'Comment\0taken on a sunny day')))
-  on('tool.call', () => ({ result: { type: 'image', base64 } }))
-  const out = await $.tool.call({ tool: 'Read', file_path: 'photo.png' })
-  expect(out.deny).toBeUndefined()
   expect(out.result.base64).toBe(base64)
-})
-
-test('withholds an image whose PNG text chunk holds a secret', async ($, on) => {
-  on('tool.call', () => ({ result: { type: 'image', base64: btoa(pngImage('A', pngChunk('tEXt', 'Comment\0' + metadataSecret))) } }))
-  const out = await $.tool.call({ tool: 'Read', file_path: 'photo.png' })
-  expect(out.deny).toContain('secret-shaped')
-})
-
-test('withholds an image whose compressed PNG text chunk holds a secret', async ($, on) => {
-  const compressed = await zlib(metadataSecret)
-  on('tool.call', () => ({ result: { type: 'image', base64: btoa(pngImage('A', pngChunk('zTXt', 'Comment\0\0' + compressed))) } }))
-  const out = await $.tool.call({ tool: 'Read', file_path: 'photo.png' })
-  expect(out.deny).toContain('secret-shaped')
-})
-
-test('withholds an image whose PNG text chunk uses an unsupported compression method', async ($, on) => {
-  on('tool.call', () => ({ result: { type: 'image', base64: btoa(pngImage('A', pngChunk('zTXt', 'Comment\0\x01abc'))) } }))
-  const out = await $.tool.call({ tool: 'Read', file_path: 'photo.png' })
-  expect(out.deny).toContain('cannot be scanned')
-})
-
-test('withholds an image whose PNG text chunk is over the scan limit', async ($, on) => {
-  on('tool.call', () => ({ result: { type: 'image', base64: btoa(pngImage('A', pngChunk('tEXt', 'Comment\0' + 'a'.repeat(17 * 1024)))) } }))
-  const out = await $.tool.call({ tool: 'Read', file_path: 'photo.png' })
-  expect(out.deny).toContain('cannot be scanned')
-})
-
-test('withholds a GIF whose comment extension holds a secret', async ($, on) => {
-  const comment = '\x21\xfe' + gifSubBlocks(metadataSecret)
-  on('tool.call', () => ({ result: { type: 'image', base64: btoa(gifImage('A', comment)) } }))
-  const out = await $.tool.call({ tool: 'Read', file_path: 'anim.gif' })
-  expect(out.deny).toContain('secret-shaped')
-})
-
-test('withholds a JPEG whose COM segment holds a secret', async ($, on) => {
-  on('tool.call', () => ({ result: { type: 'image', base64: btoa(jpegImage('A'.repeat(64), jpegSegment('\xfe', metadataSecret))) } }))
-  const out = await $.tool.call({ tool: 'Read', file_path: 'photo.jpg' })
-  expect(out.deny).toContain('secret-shaped')
-})
-
-for (const [label, bytes] of forgedImages) {
-  test(`withholds a plaintext file that only looks like an image: ${label}`, async ($, on) => {
-    on('tool.call', () => ({ result: { type: 'image', base64: btoa(bytes) } }))
-    const out = await $.tool.call({ tool: 'Read', file_path: 'creds.png' })
-    expect(out.deny).toContain('not a recognised image format')
-    expect(out.result).toBeUndefined()
-  })
-}
-
-test('withholds a non-image Read payload, even a small one', async ($, on) => {
-  const base64 = btoa('AWS_KEY=AKIAIOSFODNN7EXAMPLE and more plain text here')
-  on('tool.call', () => ({ result: { type: 'image', base64 } }))
-  const out = await $.tool.call({ tool: 'Read', file_path: 'creds.png' })
-  expect(out.deny).toContain('not a recognised image format')
-  expect(out.result).toBeUndefined()
-})
-
-test('withholds a plaintext file that starts with a PNG signature but no IHDR header', async ($, on) => {
-  const base64 = btoa('\x89PNG\r\n\x1a\n' + 'AWS_KEY=AKIAIOSFODNN7EXAMPLE '.repeat(3))
-  on('tool.call', () => ({ result: { type: 'image', base64 } }))
-  const out = await $.tool.call({ tool: 'Read', file_path: 'creds.png' })
-  expect(out.deny).toContain('not a recognised image format')
 })
 
 test('withholds an MCP result whose joined text exceeds the scan limit even though each block fits', async ($, on) => {

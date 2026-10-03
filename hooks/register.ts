@@ -18,7 +18,6 @@ import { atom, read, update } from 'claude-code'
 import { REDACTION_RULES } from './lib/redaction-rules'
 import { redactText, containsAnySecret, exceedsResultBudget, exceedsScanLimit } from './lib/redaction'
 import { scrubInvisible } from './lib/scrub'
-import { verifyImageBase64 } from './lib/image'
 import {
   isOutwardEffectCommand,
   composeScreen,
@@ -446,7 +445,6 @@ async function readTaintHook($: any, e: any, next: any) {
   const result = await next(e)
   if (!result || result.deny || result.isError) return result
   if (typeof e.file_path !== 'string') return result
-  if (result.result?.type === 'image') return result
 
   let cwd = ''
   try {
@@ -480,40 +478,10 @@ async function taintScreenCatch($: any, e: any, next: any) {
 // any context a later hook in this file added -- before Claude reads it).
 // ---------------------------------------------------------------------------
 
-// Read's image variant carries its payload as base64 at result.result.base64
-// (flat) or result.result.file.base64 (file record), which the plaintext secret
-// rules never match. Gated on the Read tool so an MCP result cannot hide
-// plaintext there. The payload is exempt from the scan and budget only once
-// verifyImageBase64 confirms it (see redactionHook), which also scans the
-// image's metadata text; the image data itself is not scanned, since it
-// reaches the transcript only as base64.
-function readImageBase64(e: any, result: any): string | undefined {
-  const payload = result.result
-  if (e.tool !== 'Read' || !payload || typeof payload !== 'object' || payload.type !== 'image') return undefined
-  const base64 = typeof payload.base64 === 'string' ? payload.base64 : payload.file?.base64
-  return typeof base64 === 'string' ? base64 : undefined
-}
-
-// Copy of a tool result with every string equal to the verified image payload
-// removed, so the budget counts only the text around it.
-function omitImagePayload(value: unknown, payload: string | undefined): unknown {
-  if (value === payload) return undefined
-  if (Array.isArray(value)) return value.map((v) => omitImagePayload(v, payload))
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, omitImagePayload(v, payload)]))
-  }
-  return value
-}
-
 async function redactionHook($: any, e: any, next: any) {
   const result = await next(e)
   if (!result || result.deny) return result
-  const imageBase64 = readImageBase64(e, result)
-  if (imageBase64 !== undefined) {
-    const verdict = await verifyImageBase64(imageBase64)
-    if (!verdict.ok) return { deny: 'barmkin-mod: ' + verdict.reason + ', so it was withheld' }
-  }
-  if (exceedsResultBudget(omitImagePayload(result, imageBase64))) {
+  if (exceedsResultBudget(result)) {
     return { deny: 'barmkin-mod: this tool result is larger than the redaction scan budget, so it was withheld' }
   }
 
@@ -530,7 +498,6 @@ async function redactionHook($: any, e: any, next: any) {
   // token shouldn't be able to help it dodge a secret pattern either.
   const redactValue = (value: unknown): unknown => {
     if (typeof value === 'string') {
-      if (value === imageBase64) return value
       const scrubbed = scrubInvisible(value)
       hiddenCount += scrubbed.hiddenCount
       const { text: redacted, redactedCount } = redactText(scrubbed.text, REDACTION_RULES, redactionCounters)

@@ -273,6 +273,13 @@ test('leaves a path named after a credential keyword alone', () => {
   }
 })
 
+test('redacts a JWT that follows a separator or a hyphen', () => {
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'
+  for (const line of ['token=' + jwt, 'x-auth-' + jwt]) {
+    expect(redactText(line, REDACTION_RULES, {}).categories).toContain('jwt')
+  }
+})
+
 test('withholds a tool result whose strings together exceed the aggregate budget', () => {
   expect(exceedsResultBudget({ text: 'x'.repeat(40 * 1024) })).toBe(true)
   expect(exceedsResultBudget(['x'.repeat(14 * 1024), { stdout: 'y'.repeat(14 * 1024) }, 'z'.repeat(14 * 1024), 'w'.repeat(14 * 1024)])).toBe(false)

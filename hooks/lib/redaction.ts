@@ -9,11 +9,12 @@ export interface RedactionResult {
 // Longest text the rules scan. A few generic-assignment value shapes backtrack
 // roughly quadratically in their input: measured on the current rule set,
 // 70 KB of repeated `SECRET=` takes about 0.9 s, so 16 KiB costs about 50 ms
-// per such rule. That keeps the full set comfortably inside the 1-second
-// guard budget. The JWT rule was measured at about 75 ms on 16 KiB of `eyJ-`
-// runs before its start was anchored away from a hyphen, and is now linear
-// (under 1 ms on the same input), so it adds no quadratic term. Longer text is
-// withheld as a whole rather than scanned.
+// per such rule. The JWT rule is quadratic on `eyJ-` runs too: measured at
+// about 76 ms per 16 KiB string at the cap (the worst input found), so a
+// result of four full strings costs about 4 x (46 ms generic + 76 ms JWT) =
+// 490 ms, plus one 16 KiB screen pass of about 120 ms on the joined text, about
+// 610 ms in total, inside the 1-second guard budget. Longer text is withheld as
+// a whole rather than scanned.
 const MAX_SCANNED_CHARS = 16 * 1024
 
 export function exceedsScanLimit(text: string): boolean {
@@ -25,6 +26,10 @@ export function exceedsScanLimit(text: string): boolean {
 // each about 46 ms per quadratic rule (the value-side generic-key rule is the
 // only quadratic one measured), so 4 x 46 ms = about 185 ms per tool result,
 // under the 1-second guard budget. That computed bound is the accepted design.
+// Image reads take the same path: a Read image's base64 payload is text here,
+// so an image whose base64 exceeds the 16 KiB per-string cap (roughly an image
+// file over 12 KiB) is withheld by this budget. That is the accepted limitation:
+// image reads above that size are unavailable.
 const MAX_RESULT_CHARS = 64 * 1024
 
 function textTotals(value: unknown): { total: number; longest: number } {
