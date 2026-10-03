@@ -257,3 +257,21 @@ test('F2 corpus: known gaps this refresh does not close', () => {
   const base64OfAwsKey = btoa('AKIAIOSFODNN7EXAMPLE:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')
   expect(containsAnySecret(base64OfAwsKey, REDACTION_RULES)).toBe(false)
 })
+
+test('withholds text longer than the scan limit as a whole', () => {
+  const secret = 'API_KEY=abcdef0123456789'
+  const { text, redactedCount, categories } = redactText(secret + ' ' + 'x'.repeat(20000), REDACTION_RULES, {})
+  expect(text).not.toContain('abcdef0123456789')
+  expect(redactedCount).toBe(1)
+  expect(categories).toEqual(['oversized'])
+  expect(containsAnySecret('plain words '.repeat(3000), REDACTION_RULES)).toBe(true)
+})
+
+test('still scans text right at the scan limit', () => {
+  const head = 'API_KEY=abcdef0123456789 '
+  const atLimit = head + 'x'.repeat(16 * 1024 - head.length)
+  const { text, redactedCount, categories } = redactText(atLimit, REDACTION_RULES, {})
+  expect(text).not.toContain('abcdef0123456789')
+  expect(redactedCount).toBe(1)
+  expect(categories).toEqual(['env-key'])
+})
