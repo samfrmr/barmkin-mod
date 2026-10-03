@@ -222,6 +222,7 @@ function appendAudit($: any, entry: Omit<AuditEntry, 'ts' | 'session'>): void {
 async function taintForScrub($: any, hiddenCount: number, source: string): Promise<void> {
   if (hiddenCount <= INVISIBLE_CHAR_TAINT_THRESHOLD) return
   try {
+    if (await read($, tainted)) return
     await update($, tainted, () => true)
     await update(
       $,
@@ -229,6 +230,13 @@ async function taintForScrub($: any, hiddenCount: number, source: string): Promi
       () => 'stripped ' + hiddenCount + ' invisible character(s) from ' + source,
     )
   } catch {
+    appendAudit($, {
+      event: 'scrub',
+      tool: source,
+      decision: 'taint-failed',
+      reason: hiddenCount + ' invisible character(s) stripped',
+    })
+    return
   }
   appendAudit($, {
     event: 'scrub',
@@ -392,7 +400,7 @@ async function toolDescribeHook($: any, e: any, next: any) {
   if (typeof description !== 'string') return current
 
   const scrubbed = scrubInvisible(description)
-  await taintForScrub($, scrubbed.hiddenCount, 'an MCP tool description')
+  void taintForScrub($, scrubbed.hiddenCount, 'an MCP tool description')
 
   const { description: cleaned, flagged } = neutralizeDescription(scrubbed.text)
   if (!flagged) {
@@ -551,7 +559,7 @@ async function redactionHook($: any, e: any, next: any) {
     next_.context = redactedContext
   }
 
-  await taintForScrub($, hiddenCount, 'tool:' + (typeof e.tool === 'string' && parseMcpServerName(e.tool) ? 'mcp' : e.tool))
+  void taintForScrub($, hiddenCount, 'tool:' + (typeof e.tool === 'string' && parseMcpServerName(e.tool) ? 'mcp' : e.tool))
 
   return changed ? next_ : result
 }
@@ -679,7 +687,7 @@ async function sessionReceiveHook($: any, e: any, next: any) {
   if (typeof e.text !== 'string' || e.text.length === 0) return next(e)
 
   const scrubbed = scrubInvisible(e.text)
-  await taintForScrub($, scrubbed.hiddenCount, 'an inbound peer message')
+  void taintForScrub($, scrubbed.hiddenCount, 'an inbound peer message')
 
   const verdict = await screenContent($, scrubbed.text, 'peer:' + (e.origin?.kind ?? 'unknown'), undefined)
   if (verdict.decision === 'deny') {
@@ -746,7 +754,7 @@ async function agentSpawnCatch($: any, e: any, next: any) {
 async function sessionAppendRedactionHook($: any, e: any, next: any) {
   const result = scrubAndRedactMessageContent(e.message?.content, REDACTION_RULES, redactionCounters)
   if (!result) return next(e)
-  await taintForScrub($, result.hiddenCount, 'a stored message (door:' + e.door + ')')
+  void taintForScrub($, result.hiddenCount, 'a stored message (door:' + e.door + ')')
 
   if (!result.changed) return next(e)
   return next({ ...e, message: { ...e.message, content: result.content } })
