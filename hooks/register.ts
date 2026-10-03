@@ -191,6 +191,18 @@ async function callJevSystemOne(
 // INVISIBLE_CHAR_TAINT_THRESHOLD characters.
 // The first reason recorded for a session wins, so a later taint never
 // replaces the evidence the deny message and the verdict already show.
+// Detection runs on the original text and on its scrubbed view, so a zero-width
+// character neither hides a secret from the rules nor splits one into a match.
+function hasSecretInEitherView(text: string): boolean {
+  return containsAnySecret(text, REDACTION_RULES) || containsAnySecret(scrubInvisible(text).text, REDACTION_RULES)
+}
+
+function redactInEitherView(text: string): { text: string; redactedCount: number } {
+  const first = redactText(text, REDACTION_RULES, redactionCounters)
+  const second = redactText(scrubInvisible(first.text).text, REDACTION_RULES, redactionCounters)
+  return { text: second.text, redactedCount: first.redactedCount + second.redactedCount }
+}
+
 let taintWrites: Promise<unknown> = Promise.resolve()
 
 // Taint writes run one at a time, in call order, so a fire-and-forget scrub
@@ -240,6 +252,7 @@ async function screenContent(
   label: string,
   toolUseId: string | undefined,
 ): Promise<ScreenOutcome> {
+  const raw = text
   text = scrubInvisible(text).text
   if (exceedsScanLimit(text)) {
     return {
@@ -259,7 +272,7 @@ async function screenContent(
   const local: ScoreSource = {
     model: 'heuristic',
     injection: heuristicInjectionScore(text),
-    credentials: containsAnySecret(text, REDACTION_RULES) ? 0.9 : 0,
+    credentials: hasSecretInEitherView(raw) ? 0.9 : 0,
   }
   let jevScores: ScoreSource | null = null
 
@@ -373,7 +386,7 @@ async function promptSubmitHook($: any, e: any, next: any) {
     return { deny: 'barmkin-mod: your message is longer than the 16 KiB scan limit, so it was withheld' }
   }
   // Detection runs on the scrubbed view; the original text is forwarded unless a secret is redacted.
-  const { text, redactedCount } = redactText(scrubInvisible(e.text).text, REDACTION_RULES, redactionCounters)
+  const { text, redactedCount } = redactInEitherView(e.text)
   if (redactedCount === 0) return next(e)
   $.ui.log('barmkin-mod: redacted ' + redactedCount + ' likely secret(s) from your message before sending it')
   return next({ ...e, text })
@@ -546,7 +559,7 @@ async function redactionHook($: any, e: any, next: any) {
     if (typeof value === 'string') {
       const scrubbed = scrubInvisible(value)
       hiddenCount += scrubbed.hiddenCount
-      const { text: redacted, redactedCount } = redactText(scrubbed.text, REDACTION_RULES, redactionCounters)
+      const { text: redacted, redactedCount } = redactInEitherView(value)
       if (redactedCount === 0 && scrubbed.strippedCount === 0) return value
       changed = true
       return redacted
@@ -568,7 +581,7 @@ async function redactionHook($: any, e: any, next: any) {
       if (typeof c !== 'string') return c
       const scrubbed = scrubInvisible(c)
       hiddenCount += scrubbed.hiddenCount
-      const { text: redacted, redactedCount } = redactText(scrubbed.text, REDACTION_RULES, redactionCounters)
+      const { text: redacted, redactedCount } = redactInEitherView(c)
       if (redactedCount > 0 || scrubbed.strippedCount > 0) changed = true
       return redacted
     })
@@ -707,7 +720,7 @@ async function sessionReceiveHook($: any, e: any, next: any) {
     return { consumed: 'barmkin-mod: withheld an inbound message (it is longer than the 16 KiB scan limit)' }
   }
 
-  const verdict = await screenContent($, scrubbed.text, 'peer:' + (e.origin?.kind ?? 'unknown'), undefined)
+  const verdict = await screenContent($, e.text, 'peer:' + (e.origin?.kind ?? 'unknown'), undefined)
   if (verdict.decision === 'deny') {
     return { consumed: 'barmkin-mod: withheld an inbound message (' + verdict.reason + ')' }
   }
@@ -724,7 +737,7 @@ async function sessionSendHook($: any, e: any, next: any) {
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it is longer than the 16 KiB scan limit' }
   }
   // Detection runs on the scrubbed view; the original text is delivered when no secret is found.
-  if (containsAnySecret(scrubInvisible(e.text).text, REDACTION_RULES)) {
+  if (hasSecretInEitherView(e.text)) {
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it appears to contain a secret' }
   }
   return next(e)

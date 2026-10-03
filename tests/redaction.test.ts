@@ -304,6 +304,12 @@ test('helper-level: detection on a zero-width-split AKIA key holds only after th
   expect(redactText(scrubInvisible(split).text, REDACTION_RULES, {}).text).toContain('[REDACTED:aws-key#')
 })
 
+test('helper-level: a zero-width character before a key is seen on the original view, not the scrubbed one', () => {
+  const hidden = 'key1​AKIAIOSFODNN7EXAMPLE'
+  expect(containsAnySecret(hidden, REDACTION_RULES)).toBe(true)
+  expect(containsAnySecret(scrubInvisible(hidden).text, REDACTION_RULES)).toBe(false)
+})
+
 test('helper-level: an outbound text with joiners and no secret is left unredacted, so the original is forwarded', () => {
   const typed = 'family 👨‍👩‍👧 and क्‍ष and ‌fine'
   expect(redactText(scrubInvisible(typed).text, REDACTION_RULES, {}).redactedCount).toBe(0)

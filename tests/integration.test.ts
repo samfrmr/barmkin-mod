@@ -100,6 +100,14 @@ test('redacts an AWS key split by a zero-width character in a user-typed prompt'
   expect(answer.text).not.toContain('​')
 })
 
+test('a prompt with a zero-width character before a key does not forward the key', async ($, on) => {
+  on('ui.log', () => ({ value: undefined }))
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  const answer = await $.prompt.submit({ text: 'key1​AKIAIOSFODNN7EXAMPLE' })
+  expect(answer.text).not.toContain('AKIAIOSFODNN7EXAMPLE')
+  expect(answer.text).toContain('[REDACTED:aws-key#')
+})
+
 test('a prompt with joiners and no secret reaches the model byte-identical', async ($, on) => {
   on('prompt.submit', ($, e) => ({ text: e.text }))
   const typed = 'family 👨‍👩‍👧 and क्‍ष and ‌fine'
