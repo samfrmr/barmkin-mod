@@ -308,6 +308,7 @@ async function sessionStartHook($: any, e: any, next: any) {
   } catch {
     // the policy source refused or unavailable; checkPosture reports seating as unverified
   }
+  if (typeof policy !== 'object') policy = null
   const mcpAllowlist = parseAllowlist(pluginOptions.mcp_server_allowlist)
   for (const warning of checkPosture({ merged, policy }, PLUGIN_NAME, mcpAllowlist)) {
     statusLines.push('barmkin-mod posture: ' + warning)
@@ -339,6 +340,9 @@ async function promptSubmitHook($: any, e: any, next: any) {
   await update($, taintReason, () => null)
 
   if (typeof e.text !== 'string') return next(e)
+  if (exceedsScanLimit(e.text)) {
+    return { deny: 'barmkin-mod: your message is longer than the 16 KiB scan limit, so it was withheld' }
+  }
   const { text, redactedCount } = redactText(e.text, REDACTION_RULES, redactionCounters)
   if (redactedCount === 0) return next(e)
   $.ui.log('barmkin-mod: redacted ' + redactedCount + ' likely secret(s) from your message before sending it')
@@ -464,14 +468,36 @@ async function taintScreenCatch($: any, e: any, next: any) {
 // any context a later hook in this file added -- before Claude reads it).
 // ---------------------------------------------------------------------------
 
+// The first 16 base64 characters decode to the first 12 bytes, which covers
+// the magic headers below and WebP's "WEBP" tag at offset 8.
+function isImageBase64(payload: string): boolean {
+  let head: string
+  try {
+    head = atob(payload.slice(0, 16))
+  } catch {
+    return false
+  }
+  return (
+    head.startsWith('\x89PNG\r\n\x1a\n') ||
+    head.startsWith('\xff\xd8\xff') ||
+    head.startsWith('GIF87a') ||
+    head.startsWith('GIF89a') ||
+    (head.startsWith('RIFF') && head.slice(8, 12) === 'WEBP')
+  )
+}
+
 // Read's image variant carries its payload as base64, which the plaintext
-// secret rules never match, so that one field is left out of the scan and the
-// budget. Gated on the Read tool so an MCP result cannot hide plaintext there.
+// secret rules never match, so a payload that decodes to an image header is
+// left out of the scan and the budget. A text file with an image extension
+// fails the header check and stays in the scan. Residual gap: bytes inside a
+// verified image (its pixels or metadata) are not scanned; they reach the
+// transcript only as base64, not as readable text. Gated on the Read tool so
+// an MCP result cannot hide plaintext there.
 function readImageBase64(e: any, result: any): string | undefined {
   const payload = result.result
   if (e.tool !== 'Read' || !payload || typeof payload !== 'object') return undefined
   if (payload.type !== 'image' || typeof payload.base64 !== 'string') return undefined
-  return payload.base64
+  return isImageBase64(payload.base64) ? payload.base64 : undefined
 }
 
 async function redactionHook($: any, e: any, next: any) {

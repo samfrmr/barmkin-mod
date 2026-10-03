@@ -267,9 +267,10 @@ test('withholds text longer than the scan limit as a whole', () => {
   expect(containsAnySecret('plain words '.repeat(3000), REDACTION_RULES)).toBe(false)
 })
 
-test('flags a tool result whose strings together exceed the aggregate budget', () => {
-  expect(exceedsResultBudget({ text: 'x'.repeat(40 * 1024) })).toBe(false)
-  expect(exceedsResultBudget(['x'.repeat(40 * 1024), { stdout: 'y'.repeat(40 * 1024) }])).toBe(true)
+test('withholds a tool result whose strings together exceed the aggregate budget', () => {
+  expect(exceedsResultBudget({ text: 'x'.repeat(40 * 1024) })).toBe(true)
+  expect(exceedsResultBudget(['x'.repeat(14 * 1024), { stdout: 'y'.repeat(14 * 1024) }, 'z'.repeat(14 * 1024), 'w'.repeat(14 * 1024)])).toBe(false)
+  expect(exceedsResultBudget(Array.from({ length: 5 }, () => 'x'.repeat(14 * 1024)))).toBe(true)
 })
 
 test('still scans text right at the scan limit', () => {
