@@ -50,14 +50,15 @@ export const REDACTION_RULES: RedactionRule[] = [
   // leading $VAR reference or ${...} interpolation, quoted or not). Code
   // expressions assigned to a *_KEY constant are left alone, so a secret built
   // by code or containing those characters unquoted is a known gap. The name
-  // class covers _KEY/SECRET/_PAT and, as whole name segments ending the name,
-  // TOKEN/PASSWORD/PASSWD/CREDENTIAL(S), so DB_PASSWORD=, API_TOKEN= and similar
-  // assignments redact the same way *_KEY=/SECRET= already did, while a path
-  // such as DB_PASSWORD_FILE= is left alone.
+  // class covers _KEY/SECRET/TOKEN/PASSWORD/PASSWD/CREDENTIAL(S)/_PAT anywhere
+  // in the name, so DB_PASSWORD_PROD=, API_TOKEN2= and similar assignments
+  // redact the same way *_KEY= already did. A reference is not a secret: a name
+  // ending in _FILE, _PATH, _DIR or _URL, or a value beginning '/', '~', './' or
+  // '../', is left alone, so DB_PASSWORD_FILE=/run/secrets/... stays unredacted.
   {
     name: 'generic-key-env-assignment',
     pattern:
-      /\b(?=(?<name>[A-Z0-9_]*(?:(?<=_)KEY|SECRET|(?<![A-Z0-9])(?:TOKEN|PASSWORD|PASSWD|CREDENTIALS?)(?![A-Z0-9_])|_PAT(?![A-Z]))[A-Z0-9_]*))\k<name>[ \t]*=[ \t]*(?:(?<q>['"])(?!\$|\[REDACTED:)(?![^'"\s]*\$\{)(?=[^'"\s]*\d)[^'"\s]{16,}\k<q>(?![ \t]*[-+*\/%.[(])|(?!\$)(?=[^\s'"`()[\]{}.;,]*\d)[^\s'"`()[\]{}.;,]{16,}(?![^\s;,'"`]))/g,
+      /\b(?=(?<name>[A-Z0-9_]*(?:(?<=_)KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|_PAT(?![A-Z]))[A-Z0-9_]*))\k<name>(?<!_FILE|_PATH|_DIR|_URL)[ \t]*=[ \t]*(?:(?<q>['"])(?![$/~]|\.{1,2}\/|\[REDACTED:)(?![^'"\s]*\$\{)(?=[^'"\s]*\d)[^'"\s]{16,}\k<q>(?![ \t]*[-+*\/%.[(])|(?![$/~]|\.{1,2}\/)(?=[^\s'"`()[\]{}.;,]*\d)[^\s'"`()[\]{}.;,]{16,}(?![^\s;,'"`]))/g,
     category: 'env-key',
     example: 'AWS_SECRET_KEY=abcdef0123456789',
   },
