@@ -16,7 +16,7 @@
 // static-analysis rules for the mods API.
 import { atom, read, update } from 'claude-code'
 import { REDACTION_RULES } from './lib/redaction-rules'
-import { redactText, containsAnySecret, exceedsResultBudget, exceedsScanLimit } from './lib/redaction'
+import { redactText, containsAnySecret, containsSecretInEitherView, exceedsResultBudget, exceedsScanLimit } from './lib/redaction'
 import { scrubInvisible } from './lib/scrub'
 import {
   isOutwardEffectCommand,
@@ -153,9 +153,9 @@ const JEV_QUESTIONS: Record<string, NoulQuestion> = {
 async function callJevSystemOne(
   $: any,
   jev: JevOptions,
-  rawText: string,
+  scrubbedText: string,
 ): Promise<SystemOneParseResult> {
-  const text = redactInEitherView(rawText).text.slice(0, 4000)
+  const text = redactInEitherView(scrubbedText).text.slice(0, 4000)
   const body = buildSystemOneRequest(jev.model, { content: text }, JEV_QUESTIONS)
   const controller = new AbortController()
   const timer = $.clock.after(JEV_TIMEOUT_MS, () => controller.abort())
@@ -184,12 +184,6 @@ async function callJevSystemOne(
   } finally {
     timer.cancel()
   }
-}
-
-// Detection runs on the original text and on its scrubbed view, so a zero-width
-// character neither hides a secret from the rules nor splits one into a match.
-function hasSecretInEitherView(text: string): boolean {
-  return containsAnySecret(text, REDACTION_RULES) || containsAnySecret(scrubInvisible(text).text, REDACTION_RULES)
 }
 
 function redactInEitherView(text: string): { text: string; redactedCount: number } {
@@ -272,12 +266,12 @@ async function screenContent(
   const local: ScoreSource = {
     model: 'heuristic',
     injection: heuristicInjectionScore(text),
-    credentials: hasSecretInEitherView(raw) ? 0.9 : 0,
+    credentials: containsSecretInEitherView(raw, REDACTION_RULES) ? 0.9 : 0,
   }
   let jevScores: ScoreSource | null = null
 
   if (canUseJev) {
-    const outcome = await callJevSystemOne($, jev, raw)
+    const outcome = await callJevSystemOne($, jev, text)
     if (outcome.ok) {
       jevScores = {
         model: outcome.model,
@@ -383,7 +377,7 @@ async function promptSubmitHook($: any, e: any, next: any) {
 
   if (typeof e.text !== 'string') return next(e)
   if (exceedsScanLimit(e.text)) {
-    return { deny: 'barmkin-mod: your message is longer than the 16 KiB scan limit, so it was withheld' }
+    return { drop: 'barmkin-mod: your message is longer than the 16 KiB scan limit, so it was withheld' }
   }
   // Detection runs on the scrubbed view; the original text is forwarded unless a secret is redacted.
   const { text, redactedCount } = redactInEitherView(e.text)
@@ -716,7 +710,7 @@ async function sessionReceiveHook($: any, e: any, next: any) {
 
   const scrubbed = scrubInvisible(e.text)
   void taintForScrub($, scrubbed.hiddenCount, 'an inbound peer message')
-  if (exceedsScanLimit(scrubbed.text)) {
+  if (exceedsScanLimit(e.text)) {
     return { consumed: 'barmkin-mod: withheld an inbound message (it is longer than the 16 KiB scan limit)' }
   }
 
@@ -737,7 +731,7 @@ async function sessionSendHook($: any, e: any, next: any) {
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it is longer than the 16 KiB scan limit' }
   }
   // Detection runs on the scrubbed view; the original text is delivered when no secret is found.
-  if (hasSecretInEitherView(e.text)) {
+  if (containsSecretInEitherView(e.text, REDACTION_RULES)) {
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it appears to contain a secret' }
   }
   return next(e)

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { REDACTION_RULES } from '../hooks/lib/redaction-rules'
-import { redactText, containsAnySecret, exceedsResultBudget } from '../hooks/lib/redaction'
+import { redactText, containsAnySecret, containsSecretInEitherView, exceedsResultBudget } from '../hooks/lib/redaction'
 import { scrubInvisible } from '../hooks/lib/scrub'
 
 test('redacts every example vector with a numbered placeholder', () => {
@@ -308,6 +308,14 @@ test('helper-level: a zero-width character before a key is seen on the original 
   const hidden = 'key1​AKIAIOSFODNN7EXAMPLE'
   expect(containsAnySecret(hidden, REDACTION_RULES)).toBe(true)
   expect(containsAnySecret(scrubInvisible(hidden).text, REDACTION_RULES)).toBe(false)
+})
+
+test('helper-level: a secret hidden behind a zero-width character is refused on both views', () => {
+  const hidden = 'key1​AKIAIOSFODNN7EXAMPLE'
+  const scrubbedOnly = 'AKIA​IOSFODNN7EXAMPLE'
+  expect(containsSecretInEitherView(hidden, REDACTION_RULES)).toBe(true)
+  expect(containsSecretInEitherView(scrubbedOnly, REDACTION_RULES)).toBe(true)
+  expect(containsSecretInEitherView('plain text with no key', REDACTION_RULES)).toBe(false)
 })
 
 test('helper-level: an outbound text with joiners and no secret is left unredacted, so the original is forwarded', () => {

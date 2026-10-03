@@ -124,7 +124,7 @@ test('a prompt with nothing to redact passes through unchanged', async ($, on) =
 test('withholds a prompt over the scan limit instead of replacing it with a placeholder', async ($, on) => {
   on('prompt.submit', ($, e) => ({ text: e.text }))
   const answer = await $.prompt.submit({ text: 'log line\n'.repeat(3000) })
-  expect(answer.deny).toContain('16 KiB')
+  expect(answer.drop).toContain('16 KiB')
   expect(answer.text).toBeUndefined()
 })
 

@@ -1,4 +1,5 @@
 import type { RedactionRule } from './redaction-rules.js'
+import { scrubInvisible } from './scrub'
 
 export interface RedactionResult {
   text: string
@@ -89,6 +90,12 @@ export function redactText(
 // RegExp.prototype.test stateful (it advances lastIndex across calls on
 // the same object). Reset it before each test so this can be called
 // repeatedly without alternating false negatives.
+// Detection runs on the original text and on its scrubbed view, so a zero-width
+// character neither hides a secret from the rules nor splits one into a match.
+export function containsSecretInEitherView(text: string, rules: RedactionRule[]): boolean {
+  return containsAnySecret(text, rules) || containsAnySecret(scrubInvisible(text).text, rules)
+}
+
 export function containsAnySecret(text: string, rules: RedactionRule[]): boolean {
   if (exceedsScanLimit(text)) return false
   return rules.some((rule) => {
