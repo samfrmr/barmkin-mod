@@ -38,8 +38,6 @@ import { neutralizeDescription, parseMcpServerName, isAllowedServer } from './li
 import { parseSemgrepJson, formatFindingsContext, worstSeverity, buildSemgrepCandidates } from './lib/sast'
 import { extractResultText, appendContext, withholdResult } from './lib/tool-result'
 import { meetsMinimumVersion, MIN_CLAUDE_CODE_VERSION } from './lib/version'
-import { recordAudit, type AuditEntry, type AuditStore } from './lib/audit'
-import { scrubAndRedactMessageContent } from './lib/session-append'
 import { checkPosture } from './lib/posture'
 
 // ---------------------------------------------------------------------------
@@ -188,37 +186,9 @@ async function callJevSystemOne(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Durable audit log (R12): an append-only JSONL file per session of every
-// notable guard decision this session made, outside $.state (which `lastVerdict` already
-// showed only keeps the single most recent verdict -- F11). Best-effort and
-// never a gate: a write failure here never denies or delays a tool call: the
-// log is a record of decisions already made elsewhere, not a decision point
-// of its own, so there's nothing for a `.catch` to hold here. Callers never
-// await it: the write is queued behind any earlier one and runs off the
-// calling hook's budget, including the home-directory lookup it needs, so no
-// guard ever waits on that probe.
-// One file per session, so concurrent Claude Code sessions never
-// read-modify-write the same file and drop each other's rows.
-// ---------------------------------------------------------------------------
-
-function auditStore($: any): AuditStore {
-  return {
-    home: () => resolveHomeDir($),
-    session: () => $.session.id(),
-    read: (path) => $.fs.read(path),
-    missing: async (path) => (await $.process.run(['sh', '-c', 'test -e "$1"', 'sh', path], { timeoutMs: 5000 })).exitCode === 1,
-    write: (path, text) => $.fs.write(path, text),
-  }
-}
-
-function appendAudit($: any, entry: Omit<AuditEntry, 'ts' | 'session'>): void {
-  void recordAudit(auditStore($), entry)
-}
-
 // Shared by every R7 call site (the outermost redaction pass, tool.describe,
-// session.receive, and the session.append backstop): taints the session
-// when a scrub stripped more than INVISIBLE_CHAR_TAINT_THRESHOLD characters.
+// and session.receive): taints the session when a scrub stripped more than
+// INVISIBLE_CHAR_TAINT_THRESHOLD characters.
 async function taintForScrub($: any, hiddenCount: number, source: string): Promise<void> {
   if (hiddenCount <= INVISIBLE_CHAR_TAINT_THRESHOLD) return
   try {
@@ -230,20 +200,8 @@ async function taintForScrub($: any, hiddenCount: number, source: string): Promi
       () => 'stripped ' + hiddenCount + ' invisible character(s) from ' + source,
     )
   } catch {
-    appendAudit($, {
-      event: 'scrub',
-      tool: source,
-      decision: 'taint-failed',
-      reason: hiddenCount + ' invisible character(s) stripped',
-    })
     return
   }
-  appendAudit($, {
-    event: 'scrub',
-    tool: source,
-    decision: 'taint',
-    reason: hiddenCount + ' invisible character(s) stripped',
-  })
 }
 
 async function recordBreakerFailure($: any): Promise<void> {
@@ -306,8 +264,6 @@ async function screenContent(
     await update($, tainted, () => true)
     await update($, taintReason, () => composed.reason)
   }
-
-  appendAudit($, { event: 'screen', tool: label, decision: composed.decision, reason: composed.reason })
 
   if (toolUseId) {
     try {
@@ -416,7 +372,6 @@ async function mcpGuardHook($: any, e: any, next: any) {
   if (serverName) {
     const allowlist = parseAllowlist(pluginOptions.mcp_server_allowlist)
     if (!isAllowedServer(serverName, allowlist)) {
-      appendAudit($, { event: 'mcp-allowlist', tool: 'mcp', decision: 'deny', reason: 'server not on allowlist' })
       return { deny: 'barmkin-mod: MCP server "' + serverName + '" is not on the allowlist' }
     }
   }
@@ -446,7 +401,6 @@ async function outwardEffectGuardHook($: any, e: any, next: any) {
   const isTainted = await read($, tainted)
   if (isTainted && typeof e.command === 'string' && isOutwardEffectCommand(e.command)) {
     const reason = await read($, taintReason)
-    appendAudit($, { event: 'outward-effect', tool: 'Bash', decision: 'deny', reason: reason ?? 'unspecified' })
     return {
       deny:
         'barmkin-mod: this session is handling untrusted content (' +
@@ -583,10 +537,9 @@ async function redactionCatch($: any, e: any, next: any) {
 // available to a hook, so it's read via a plain (non-login, no profile
 // sourcing, so no stray stdout to confuse this with a failure) `sh -c`
 // probe; `sh` itself is expected to always be on the process's PATH even
-// when `semgrep` isn't. Cached for the session once it succeeds, so a failed
-// or timed-out probe is retried rather than frozen in as an empty home.
+// when `semgrep` isn't. Cached for the session so this only runs once.
 async function resolveHomeDir($: any): Promise<string> {
-  if (probedHomeDir) return probedHomeDir
+  if (probedHomeDir !== null) return probedHomeDir
   let home = ''
   try {
     const proc = await $.process.run(['sh', '-c', 'printf %s "$HOME"'], { timeoutMs: 2000 })
@@ -594,7 +547,7 @@ async function resolveHomeDir($: any): Promise<string> {
   } catch {
     home = ''
   }
-  if (home) probedHomeDir = home
+  probedHomeDir = home
   return home
 }
 
@@ -703,7 +656,6 @@ async function sessionReceiveCatch($: any, e: any, next: any) {
 async function sessionSendHook($: any, e: any, next: any) {
   if (typeof e.text !== 'string') return next(e)
   if (containsAnySecret(e.text, REDACTION_RULES)) {
-    appendAudit($, { event: 'session-send-dlp', tool: 'session.send', decision: 'deny', reason: 'message appears to contain a secret' })
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it appears to contain a secret' }
   }
   return next(e)
@@ -717,7 +669,6 @@ async function agentSpawnHook($: any, e: any, next: any) {
   const isTainted = await read($, tainted)
   if (isTainted) {
     const reason = await read($, taintReason)
-    appendAudit($, { event: 'agent-spawn', tool: 'agent.spawn', decision: 'deny', reason: reason ?? 'unspecified' })
     return {
       deny:
         'barmkin-mod: subagent spawn blocked while this session is tainted (' +
@@ -730,34 +681,6 @@ async function agentSpawnHook($: any, e: any, next: any) {
 
 async function agentSpawnCatch($: any, e: any, next: any) {
   return { deny: 'barmkin-mod: the a2a spawn guard failed (' + next.error.kind + '); subagent spawn blocked' }
-}
-
-// ---------------------------------------------------------------------------
-// session.append redaction/scrub backstop (R12). Covers channels the
-// tool.call-scoped hooks above can't reach at all (skill text, CLAUDE.md and
-// instruction-file content, slash-command arguments, attachments) by
-// catching their secrets and invisible characters on the way into the
-// stored transcript instead.
-//
-// This is a backstop, not a guard: Claude Code's session.append docs say a
-// hook may rewrite a text block's `text` and a tool_result block's
-// `content`/`is_error` (both honoured -- confirmed from the generated
-// 2.1.287 types, not just observed live), but every other door than the
-// plugin's own `note` ignores a `{ deny }` answer and a hook that fails
-// before calling `next` is "skipped": the row stores as it arrived, not
-// withheld. So there's no fail-closed shape available here (no `.catch` can
-// make a failure deny), unlike every tool.call guard above. Treat this the
-// way the outermost redaction pass is documented, as defense in depth for
-// what reaches the model and the transcript, not as an enforcement floor.
-// ---------------------------------------------------------------------------
-
-async function sessionAppendRedactionHook($: any, e: any, next: any) {
-  const result = scrubAndRedactMessageContent(e.message?.content, REDACTION_RULES, redactionCounters)
-  if (!result) return next(e)
-  void taintForScrub($, result.hiddenCount, 'a stored message (door:' + e.door + ')')
-
-  if (!result.changed) return next(e)
-  return next({ ...e, message: { ...e.message, content: result.content } })
 }
 
 // ---------------------------------------------------------------------------
@@ -871,11 +794,6 @@ export function register(on: any, options: Record<string, unknown>) {
   on('session.receive', sessionReceiveHook).catch(sessionReceiveCatch)
   on('session.send', sessionSendHook).catch(sessionSendCatch)
   on('agent.spawn', agentSpawnHook).catch(agentSpawnCatch)
-  // No .catch: session.append only honours a `{ deny }` answer for the
-  // plugin's own door ('note'), which this hook never uses -- see the
-  // hook's own header comment for why there is no fail-closed shape here.
-  on('session.append', sessionAppendRedactionHook)
-
   on('ui.render', { component: 'Pane' }, findingsPaneHook)
   on('ui.render', { component: 'AbovePrompt' }, hudHook)
   on('command.run', { command: 'barmkin-mod-findings' }, findingsCommandHook)
