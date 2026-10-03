@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { REDACTION_RULES } from '../hooks/lib/redaction-rules'
 import { redactText, containsAnySecret, exceedsResultBudget } from '../hooks/lib/redaction'
+import { scrubInvisible } from '../hooks/lib/scrub'
 
 test('redacts every example vector with a numbered placeholder', () => {
   // Each rule is checked against its own example in isolation. Running the
@@ -294,6 +295,13 @@ test('redacts a lowercase credential assignment the same as an uppercase one', (
     expect(redactText(line, REDACTION_RULES, {}).categories).toContain('env-key')
   }
   expect(redactText('db_password_file=/run/secrets/db_password_v2', REDACTION_RULES, {}).redactedCount).toBe(0)
+})
+
+test('helper-level: detection on a zero-width-split AKIA key holds only after the scrub runs', () => {
+  const split = 'my key is AKIA​IOSFODNN7EXAMPLE, use it'
+  expect(containsAnySecret(split, REDACTION_RULES)).toBe(false)
+  expect(containsAnySecret(scrubInvisible(split).text, REDACTION_RULES)).toBe(true)
+  expect(redactText(scrubInvisible(split).text, REDACTION_RULES, {}).text).toContain('[REDACTED:aws-key#')
 })
 
 test('leaves a letters-only password-class value unredacted (documented gap)', () => {
