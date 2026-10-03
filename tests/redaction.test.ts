@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { REDACTION_RULES } from '../hooks/lib/redaction-rules'
-import { redactText, containsAnySecret } from '../hooks/lib/redaction'
+import { redactText, containsAnySecret, exceedsResultBudget } from '../hooks/lib/redaction'
 
 test('redacts every example vector with a numbered placeholder', () => {
   // Each rule is checked against its own example in isolation. Running the
@@ -264,7 +264,12 @@ test('withholds text longer than the scan limit as a whole', () => {
   expect(text).not.toContain('abcdef0123456789')
   expect(redactedCount).toBe(1)
   expect(categories).toEqual(['oversized'])
-  expect(containsAnySecret('plain words '.repeat(3000), REDACTION_RULES)).toBe(true)
+  expect(containsAnySecret('plain words '.repeat(3000), REDACTION_RULES)).toBe(false)
+})
+
+test('flags a tool result whose strings together exceed the aggregate budget', () => {
+  expect(exceedsResultBudget({ text: 'x'.repeat(40 * 1024) })).toBe(false)
+  expect(exceedsResultBudget(['x'.repeat(40 * 1024), { stdout: 'y'.repeat(40 * 1024) }])).toBe(true)
 })
 
 test('still scans text right at the scan limit', () => {

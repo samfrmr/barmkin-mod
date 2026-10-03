@@ -11,7 +11,27 @@ export interface RedactionResult {
 // 70 KB of repeated `SECRET=` takes about 0.9 s, so 16 KiB costs about 50 ms
 // per such rule. That keeps the full set comfortably inside the 1-second
 // guard budget. Longer text is withheld as a whole rather than scanned.
-const MAX_SCANNED_CHARS = 16 * 1024
+export const MAX_SCANNED_CHARS = 16 * 1024
+
+// Total text one tool result may carry. Each string is capped at
+// MAX_SCANNED_CHARS, but a result of many such strings would multiply the
+// per-string cost, so the sum is capped too: 64 KiB bounds the worst case at
+// about four times the single-string figure above (about 200 ms per
+// quadratic rule).
+const MAX_RESULT_CHARS = 64 * 1024
+
+function textLength(value: unknown): number {
+  if (typeof value === 'string') return value.length
+  if (Array.isArray(value)) return value.reduce((total: number, item) => total + textLength(item), 0)
+  if (value && typeof value === 'object') {
+    return Object.values(value).reduce((total: number, item) => total + textLength(item), 0)
+  }
+  return 0
+}
+
+export function exceedsResultBudget(result: unknown): boolean {
+  return textLength(result) > MAX_RESULT_CHARS
+}
 
 // Replaces every secret match with a placeholder token, numbered per
 // category. No reversible map is kept anywhere: once a value is replaced,
@@ -49,7 +69,7 @@ export function redactText(
 // the same object). Reset it before each test so this can be called
 // repeatedly without alternating false negatives.
 export function containsAnySecret(text: string, rules: RedactionRule[]): boolean {
-  if (text.length > MAX_SCANNED_CHARS) return true
+  if (text.length > MAX_SCANNED_CHARS) return false
   return rules.some((rule) => {
     rule.pattern.lastIndex = 0
     return rule.pattern.test(text)

@@ -16,7 +16,7 @@
 // static-analysis rules for the mods API.
 import { atom, read, update } from 'claude-code'
 import { REDACTION_RULES } from './lib/redaction-rules'
-import { redactText, containsAnySecret } from './lib/redaction'
+import { redactText, containsAnySecret, exceedsResultBudget, MAX_SCANNED_CHARS } from './lib/redaction'
 import { scrubInvisible } from './lib/scrub'
 import {
   isOutwardEffectCommand,
@@ -466,6 +466,9 @@ async function taintScreenCatch($: any, e: any, next: any) {
 async function redactionHook($: any, e: any, next: any) {
   const result = await next(e)
   if (!result || result.deny) return result
+  if (exceedsResultBudget(result)) {
+    return { deny: 'barmkin-mod: this tool result is larger than the redaction scan budget, so it was withheld' }
+  }
 
   let changed = false
   let hiddenCount = 0
@@ -653,6 +656,9 @@ async function sessionReceiveCatch($: any, e: any, next: any) {
 
 async function sessionSendHook($: any, e: any, next: any) {
   if (typeof e.text !== 'string') return next(e)
+  if (e.text.length > MAX_SCANNED_CHARS) {
+    return { isDelivered: false, reason: 'barmkin-mod: message withheld, it is longer than the 16 KiB scan limit' }
+  }
   if (containsAnySecret(e.text, REDACTION_RULES)) {
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it appears to contain a secret' }
   }
