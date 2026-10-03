@@ -1,6 +1,6 @@
 // Pure helpers for the durable audit log (R12): names each session's file
-// and bounds its growth. No `$` use here; register.ts does the actual
-// $.fs.read/write.
+// and bounds their growth. No `$` use here; register.ts does the actual
+// $.fs.read/write and pruning.
 
 export interface AuditEntry {
   ts: number
@@ -25,8 +25,18 @@ export function auditLogPath(home: string, session: string): string {
   return home + '/.claude/barmkin-mod-audit-' + safe + '.jsonl'
 }
 
-// Keeps the audit log from growing without bound on a long-lived install:
-// parses existing JSONL text, keeps at most the last `maxLines` rows (plus
+const AUDIT_FILE_NAME = /^barmkin-mod-audit-[A-Za-z0-9_-]+\.jsonl$/
+
+// Bounds how many per-session files a long-lived install keeps: given a
+// directory listing ordered newest-first, returns the audit files past the
+// newest `keep`. Anything that isn't one of this mod's audit files (by
+// exact name shape) is never returned, so it's never deleted.
+export function staleAuditFiles(namesNewestFirst: string[], keep: number): string[] {
+  return namesNewestFirst.filter((name) => AUDIT_FILE_NAME.test(name)).slice(keep)
+}
+
+// Keeps one session's audit file from growing without bound (staleAuditFiles
+// bounds how many files are kept): parses existing JSONL text, keeps at most the last `maxLines` rows (plus
 // the just-appended one), and re-serializes. A line that fails to parse
 // (truncated by a prior crash mid-write, hand-edited) is dropped rather
 // than kept or allowed to break the parse of every line after it.

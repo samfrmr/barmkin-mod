@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { appendAndTrim, auditLogPath, createSerialQueue, type AuditEntry } from '../hooks/lib/audit'
+import { appendAndTrim, auditLogPath, staleAuditFiles, createSerialQueue, type AuditEntry } from '../hooks/lib/audit'
 
 const sampleEntry: AuditEntry = { ts: 1700000000000, session: 'abc123', event: 'screen', tool: 'fetch:WebFetch', decision: 'escalate', reason: 'scored 0.60 on the injection question' }
 
@@ -45,6 +45,17 @@ test('concurrent sessions write to distinct audit files', () => {
 test('a session id can never name a path outside ~/.claude', () => {
   expect(auditLogPath('/home/u', '../../etc/passwd')).toBe('/home/u/.claude/barmkin-mod-audit-______etc_passwd.jsonl')
   expect(auditLogPath('/home/u', '')).toBe('/home/u/.claude/barmkin-mod-audit-unknown.jsonl')
+})
+
+test('keeps only the newest per-session audit files', () => {
+  const listing = ['barmkin-mod-audit-c.jsonl', 'barmkin-mod-audit-b.jsonl', 'barmkin-mod-audit-a.jsonl', '']
+  expect(staleAuditFiles(listing, 2)).toEqual(['barmkin-mod-audit-a.jsonl'])
+  expect(staleAuditFiles(listing, 5)).toEqual([])
+})
+
+test('never selects a file that is not one of this mod\'s audit files', () => {
+  const listing = ['barmkin-mod-audit-new.jsonl', 'settings.json', 'barmkin-mod-audit-../x.jsonl', 'projects', 'barmkin-mod-audit-old.jsonl']
+  expect(staleAuditFiles(listing, 1)).toEqual(['barmkin-mod-audit-old.jsonl'])
 })
 
 test('serialized overlapping read-modify-write appends keep every row', async () => {

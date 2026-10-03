@@ -38,7 +38,7 @@ import { neutralizeDescription, parseMcpServerName, isAllowedServer } from './li
 import { parseSemgrepJson, formatFindingsContext, worstSeverity, buildSemgrepCandidates } from './lib/sast'
 import { extractResultText, appendContext, withholdResult } from './lib/tool-result'
 import { meetsMinimumVersion, MIN_CLAUDE_CODE_VERSION } from './lib/version'
-import { appendAndTrim, auditLogPath, createSerialQueue, type AuditEntry } from './lib/audit'
+import { appendAndTrim, auditLogPath, createSerialQueue, staleAuditFiles, type AuditEntry } from './lib/audit'
 import { scrubAndRedactContent } from './lib/session-append'
 import { checkPosture } from './lib/posture'
 
@@ -97,6 +97,9 @@ const INVISIBLE_CHAR_TAINT_THRESHOLD = 32
 // Caps the audit log file at roughly this many rows (~200-300 KB of JSONL)
 // so a long-lived install never grows it without bound.
 const MAX_AUDIT_LINES = 2000
+// Keeps at most this many per-session audit files (the most recently
+// written), so the total stays bounded at ~MAX_AUDIT_FILES * MAX_AUDIT_LINES rows.
+const MAX_AUDIT_FILES = 50
 // This plugin's own manifest name, as it appears before the `@marketplace`
 // suffix in a managed prependPlugins entry (R16's posture check).
 const PLUGIN_NAME = 'barmkin-mod'
@@ -227,6 +230,24 @@ async function writeAuditRow($: any, home: string, row: Omit<AuditEntry, 'sessio
   await $.fs.write(path, appendAndTrim(existing, full, MAX_AUDIT_LINES))
 }
 
+// Runs once per session.start, never awaited by it: deletes all but the
+// MAX_AUDIT_FILES most recently written per-session audit files. Best-effort
+// like every other audit write; a failure just leaves the files for next time.
+async function pruneAuditLogs($: any): Promise<void> {
+  const home = await resolveHomeDir($)
+  if (!home) return
+  const dir = home + '/.claude'
+  try {
+    const listing = await $.process.run(['sh', '-c', 'cd "$1" && ls -1t', 'sh', dir], { timeoutMs: 5000 })
+    if (listing.exitCode !== 0) return
+    const stale = staleAuditFiles(listing.stdout.split('\n'), MAX_AUDIT_FILES)
+    if (stale.length === 0) return
+    await $.process.run(['rm', '-f', '--', ...stale.map((name) => dir + '/' + name)], { timeoutMs: 5000 })
+  } catch {
+    // best-effort only
+  }
+}
+
 // Shared by every R7 call site (the outermost redaction pass, tool.describe,
 // session.receive, and the session.append backstop): taints the session
 // when a scrub stripped more than INVISIBLE_CHAR_TAINT_THRESHOLD characters.
@@ -329,7 +350,7 @@ async function screenContent(
 
 async function sessionStartHook($: any, e: any, next: any) {
   const statusLines: string[] = []
-  void resolveHomeDir($)
+  void pruneAuditLogs($)
 
   try {
     const version = await $.session.version()
