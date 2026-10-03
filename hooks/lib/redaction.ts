@@ -10,24 +10,26 @@ export interface RedactionResult {
 // roughly quadratically in their input: measured on the current rule set,
 // 70 KB of repeated `SECRET=` takes about 0.9 s, so 16 KiB costs about 50 ms
 // per such rule. The JWT rule is quadratic on `eyJ-` runs too: measured at
-// about 76 ms per 16 KiB string at the cap (the worst input found), so a
-// result of four full strings costs about 4 x (46 ms generic + 76 ms JWT) =
-// 490 ms, plus one 16 KiB screen pass of about 120 ms on the joined text, about
-// 610 ms in total, inside the 1-second guard budget. Longer text is withheld as
-// a whole rather than scanned.
+// about 76 ms per 16 KiB string at the cap (the worst input found). The worst
+// tool result is five full strings (see MAX_RESULT_CHARS), so the redaction
+// passes cost 5 x (46 ms generic + 76 ms JWT) = 610 ms, plus one 16 KiB screen
+// pass of about 120 ms on the joined text: about 730 ms in total, inside the
+// 1-second guard budget. Longer text is withheld as a whole rather than scanned.
 const MAX_SCANNED_CHARS = 16 * 1024
 
 export function exceedsScanLimit(text: string): boolean {
   return text.length > MAX_SCANNED_CHARS
 }
 
-// Total text one tool result may carry. The worst case is a result of
-// strings that each sit at the per-string cap: 64 KiB / 16 KiB = 4 strings,
-// each about 46 ms per quadratic rule (the value-side generic-key rule is the
-// only quadratic one measured), so 4 x 46 ms = about 185 ms per tool result,
-// under the 1-second guard budget. That computed bound is the accepted design.
-// The model-visible `text` mirror of a result repeats the same content, so it is
-// not added to the total; it still gets the per-string cap. A Read image's
+// Total text one tool result may carry, counted over `result` and its context
+// strings. The worst case is 64 KiB / 16 KiB = 4 strings at the per-string cap.
+// The model-visible `text` mirror repeats the same content, so it is not added
+// to the total, but it still gets the per-string cap, which makes a worst-case
+// result five full strings. Each full string costs about 46 ms for the generic
+// key rule and 76 ms for the JWT rule, so the redaction passes cost
+// 5 x 122 ms = 610 ms, plus one 120 ms screen pass: about 730 ms per tool
+// result, under the 1-second guard budget. That computed bound is the accepted
+// design. A Read image's
 // base64 payload is one of the strings: it survives only while it fits the
 // per-string cap, roughly 12 KiB of image. Larger images are withheld with the
 // stated reason. That is the accepted limitation: image reads above that size
