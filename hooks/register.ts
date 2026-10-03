@@ -479,35 +479,132 @@ async function taintScreenCatch($: any, e: any, next: any) {
 // any context a later hook in this file added -- before Claude reads it).
 // ---------------------------------------------------------------------------
 
-// Decodes the first 32 base64 characters (24 bytes), enough for the PNG, GIF,
-// WebP and JPEG header fields checked below. Anything that is not a real
-// image header fails, including plaintext that happens to start with an
-// image signature. Availability cost: an image with a corrupt or unrecognised
-// header is withheld as unreadable rather than passed through unscanned.
+const u8 = (b: string, i: number) => b.charCodeAt(i)
+const u16be = (b: string, i: number) => u8(b, i) * 256 + u8(b, i + 1)
+const u32be = (b: string, i: number) => u8(b, i) * 16777216 + u8(b, i + 1) * 65536 + u8(b, i + 2) * 256 + u8(b, i + 3)
+const u32le = (b: string, i: number) => u8(b, i) + u8(b, i + 1) * 256 + u8(b, i + 2) * 65536 + u8(b, i + 3) * 16777216
+
+function validPng(b: string): boolean {
+  let pos = 8
+  for (let first = true; pos + 8 <= b.length; first = false) {
+    const len = u32be(b, pos)
+    const type = b.slice(pos + 4, pos + 8)
+    if (first && (type !== 'IHDR' || len !== 13)) return false
+    pos += 12 + len
+    if (pos > b.length) return false
+    if (type === 'IEND') return pos === b.length
+  }
+  return false
+}
+
+function validJpeg(b: string): boolean {
+  let pos = 2
+  while (pos + 4 <= b.length) {
+    if (u8(b, pos) !== 0xff) return false
+    const marker = u8(b, pos + 1)
+    if (marker === 0xff) {
+      pos += 1
+    } else if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      pos += 2
+    } else if (marker === 0xd9) {
+      return false
+    } else {
+      const len = u16be(b, pos + 2)
+      if (len < 2 || pos + 2 + len > b.length) return false
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return len >= 8
+      pos += 2 + len
+    }
+  }
+  return false
+}
+
+function gifSubBlocksEnd(b: string, pos: number): number {
+  while (pos < b.length) {
+    const size = u8(b, pos)
+    pos += 1 + size
+    if (pos > b.length) return -1
+    if (size === 0) return pos
+  }
+  return -1
+}
+
+function validGif(b: string): boolean {
+  if (b.length < 13) return false
+  let pos = 13
+  const flags = u8(b, 10)
+  if (flags & 0x80) pos += 3 * 2 ** ((flags & 7) + 1)
+  while (pos < b.length) {
+    const introducer = u8(b, pos)
+    if (introducer === 0x3b) return pos + 1 === b.length
+    if (introducer === 0x21) {
+      pos = gifSubBlocksEnd(b, pos + 2)
+    } else if (introducer === 0x2c) {
+      if (pos + 10 > b.length) return false
+      const imageFlags = u8(b, pos + 9)
+      pos += 10
+      if (imageFlags & 0x80) pos += 3 * 2 ** ((imageFlags & 7) + 1)
+      pos = gifSubBlocksEnd(b, pos + 1)
+    } else {
+      return false
+    }
+    if (pos < 0) return false
+  }
+  return false
+}
+
+function validWebp(b: string): boolean {
+  if (b.length < 20 || b.slice(8, 12) !== 'WEBP' || u32le(b, 4) + 8 !== b.length) return false
+  if (!['VP8 ', 'VP8L', 'VP8X'].includes(b.slice(12, 16))) return false
+  let pos = 12
+  while (pos + 8 <= b.length) {
+    const size = u32le(b, pos + 4)
+    pos += 8 + size + (size & 1)
+    if (pos > b.length) return false
+  }
+  return pos === b.length
+}
+
+// Structural check of a Read image payload: the whole base64 is decoded and the
+// container of PNG, JPEG, GIF or WebP is walked to its end. A plaintext file
+// that only starts with an image signature, or carries bytes after the format's
+// end marker, fails. Availability cost: an image with a corrupt or unrecognised
+// structure is withheld as unreadable rather than passed through unscanned.
 function isImageBase64(payload: string): boolean {
-  let head: string
+  let bytes: string
   try {
-    head = atob(payload.slice(0, 32))
+    bytes = atob(payload)
   } catch {
     return false
   }
-  if (head.length < 24) return false
-  if (head.startsWith('\x89PNG\r\n\x1a\n')) return head.slice(12, 16) === 'IHDR'
-  if (head.startsWith('GIF87a') || head.startsWith('GIF89a')) return true
-  if (head.startsWith('RIFF') && head.slice(8, 12) === 'WEBP') return ['VP8 ', 'VP8L', 'VP8X'].includes(head.slice(12, 16))
-  return head.charCodeAt(0) === 0xff && head.charCodeAt(1) === 0xd8 && head.charCodeAt(2) === 0xff && head.charCodeAt(3) >= 0xc0
+  if (bytes.startsWith('\x89PNG\r\n\x1a\n')) return validPng(bytes)
+  if (bytes.startsWith('\xff\xd8\xff')) return validJpeg(bytes)
+  if (bytes.startsWith('GIF87a') || bytes.startsWith('GIF89a')) return validGif(bytes)
+  if (bytes.startsWith('RIFF')) return validWebp(bytes)
+  return false
 }
 
-// Read's image variant carries its payload as base64, which the plaintext
-// secret rules never match. Gated on the Read tool so an MCP result cannot
-// hide plaintext there. The payload is only exempt from the scan and budget
-// once isImageBase64 confirms it (see redactionHook); bytes inside a verified
-// image are not scanned, since they reach the transcript only as base64.
+// Read's image variant carries its payload as base64 at result.result.base64
+// (flat) or result.result.file.base64 (file record), which the plaintext secret
+// rules never match. Gated on the Read tool so an MCP result cannot hide
+// plaintext there. The payload is exempt from the scan and budget only once
+// isImageBase64 confirms it (see redactionHook); bytes inside a verified image
+// are not scanned, since they reach the transcript only as base64.
 function readImageBase64(e: any, result: any): string | undefined {
   const payload = result.result
-  if (e.tool !== 'Read' || !payload || typeof payload !== 'object') return undefined
-  if (payload.type !== 'image' || typeof payload.base64 !== 'string') return undefined
-  return payload.base64
+  if (e.tool !== 'Read' || !payload || typeof payload !== 'object' || payload.type !== 'image') return undefined
+  const base64 = typeof payload.base64 === 'string' ? payload.base64 : payload.file?.base64
+  return typeof base64 === 'string' ? base64 : undefined
+}
+
+// Copy of a tool result with every string equal to the verified image payload
+// removed, so the budget counts only the text around it.
+function omitImagePayload(value: unknown, payload: string | undefined): unknown {
+  if (value === payload) return undefined
+  if (Array.isArray(value)) return value.map((v) => omitImagePayload(v, payload))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, omitImagePayload(v, payload)]))
+  }
+  return value
 }
 
 async function redactionHook($: any, e: any, next: any) {
@@ -517,8 +614,7 @@ async function redactionHook($: any, e: any, next: any) {
   if (imageBase64 !== undefined && !isImageBase64(imageBase64)) {
     return { deny: 'barmkin-mod: this Read returned an image payload that is not a recognised image format, so it was withheld' }
   }
-  const scannable = imageBase64 === undefined ? result : { ...result, result: { ...result.result, base64: undefined } }
-  if (exceedsResultBudget(scannable)) {
+  if (exceedsResultBudget(omitImagePayload(result, imageBase64))) {
     return { deny: 'barmkin-mod: this tool result is larger than the redaction scan budget, so it was withheld' }
   }
 
@@ -535,6 +631,7 @@ async function redactionHook($: any, e: any, next: any) {
   // token shouldn't be able to help it dodge a secret pattern either.
   const redactValue = (value: unknown): unknown => {
     if (typeof value === 'string') {
+      if (value === imageBase64) return value
       const scrubbed = scrubInvisible(value)
       hiddenCount += scrubbed.hiddenCount
       const { text: redacted, redactedCount } = redactText(scrubbed.text, REDACTION_RULES, redactionCounters)
@@ -548,8 +645,7 @@ async function redactionHook($: any, e: any, next: any) {
     }
     return value
   }
-  if ('result' in result) next_.result = redactValue(scannable.result)
-  if (imageBase64 !== undefined) next_.result = { ...next_.result, base64: imageBase64 }
+  if ('result' in result) next_.result = redactValue(result.result)
   const hiddenInResult = hiddenCount
   hiddenCount = 0
   if (typeof result.text === 'string') next_.text = redactValue(result.text)

@@ -105,13 +105,67 @@ test('withholds a prompt over the scan limit instead of replacing it with a plac
   expect(answer.text).toBeUndefined()
 })
 
-test('exempts a Read image payload with an image header from the text budget', async ($, on) => {
-  const base64 = btoa('\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR' + 'A'.repeat(70 * 1024))
-  on('tool.call', () => ({ result: { type: 'image', base64 } }))
+const u16be = (n: number) => String.fromCharCode(n >>> 8, n & 255)
+const u32be = (n: number) => String.fromCharCode((n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255)
+const u32le = (n: number) => String.fromCharCode(n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255)
+
+const pngChunk = (type: string, data: string) => u32be(data.length) + type + data + '\0\0\0\0'
+const pngImage = (idat: string) =>
+  '\x89PNG\r\n\x1a\n' + pngChunk('IHDR', '\0'.repeat(13)) + pngChunk('IDAT', idat) + pngChunk('IEND', '')
+const jpegImage = (app: string) =>
+  '\xff\xd8' + '\xff\xe1' + u16be(app.length + 2) + app + '\xff\xc0' + u16be(8) + '\0'.repeat(6)
+const gifImage = (data: string) => {
+  let out = 'GIF89a' + '\x01\x00\x01\x00\x00\x00\x00' + '\x2c' + '\0'.repeat(4) + '\x01\x00\x01\x00\x00' + '\x02'
+  for (let i = 0; i < data.length; i += 255) out += String.fromCharCode(Math.min(255, data.length - i)) + data.slice(i, i + 255)
+  return out + '\0\x3b'
+}
+const webpImage = (data: string) => {
+  const chunk = 'VP8 ' + u32le(data.length) + data + (data.length % 2 ? '\0' : '')
+  return 'RIFF' + u32le(4 + chunk.length) + 'WEBP' + chunk
+}
+
+const validImages: Array<[string, string]> = [
+  ['PNG', pngImage('A'.repeat(70 * 1024))],
+  ['JPEG', jpegImage('A'.repeat(65533))],
+  ['GIF', gifImage('A'.repeat(70 * 1024))],
+  ['WebP', webpImage('A'.repeat(70 * 1024))],
+]
+
+const plaintextSecret = 'AWS_KEY=AKIAIOSFODNN7EXAMPLE '.repeat(3)
+const forgedImages: Array<[string, string]> = [
+  ['PNG without a chunk walk to IEND', '\x89PNG\r\n\x1a\n' + pngChunk('IHDR', '\0'.repeat(13)) + plaintextSecret],
+  ['JPEG with no segment structure', '\xff\xd8\xff' + plaintextSecret],
+  ['GIF with a plaintext body', 'GIF89a\x01\x00\x01\x00\x00\x00\x00' + plaintextSecret],
+  ['WebP with a wrong RIFF size', 'RIFF' + u32le(4) + 'WEBP' + 'VP8 ' + u32le(plaintextSecret.length) + plaintextSecret],
+  ['GIF with bytes after the trailer', gifImage('A'.repeat(64)) + plaintextSecret],
+]
+
+for (const [format, bytes] of validImages) {
+  test(`exempts a verified ${format} Read image payload from the text budget`, async ($, on) => {
+    const base64 = btoa(bytes)
+    on('tool.call', () => ({ result: { type: 'image', base64 } }))
+    const out = await $.tool.call({ tool: 'Read', file_path: 'screenshot.png' })
+    expect(out.deny).toBeUndefined()
+    expect(out.result.base64).toBe(base64)
+  })
+}
+
+test('exempts a verified image carried in the file record shape', async ($, on) => {
+  const base64 = btoa(pngImage('A'.repeat(70 * 1024)))
+  on('tool.call', () => ({ result: { type: 'image', file: { base64, type: 'image/png', originalSize: 10 } } }))
   const out = await $.tool.call({ tool: 'Read', file_path: 'screenshot.png' })
   expect(out.deny).toBeUndefined()
-  expect(out.result.base64).toBe(base64)
+  expect(out.result.file.base64).toBe(base64)
 })
+
+for (const [label, bytes] of forgedImages) {
+  test(`withholds a plaintext file that only looks like an image: ${label}`, async ($, on) => {
+    on('tool.call', () => ({ result: { type: 'image', base64: btoa(bytes) } }))
+    const out = await $.tool.call({ tool: 'Read', file_path: 'creds.png' })
+    expect(out.deny).toContain('not a recognised image format')
+    expect(out.result).toBeUndefined()
+  })
+}
 
 test('withholds a non-image Read payload, even a small one', async ($, on) => {
   const base64 = btoa('AWS_KEY=AKIAIOSFODNN7EXAMPLE and more plain text here')
