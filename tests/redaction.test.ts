@@ -296,6 +296,17 @@ test('redacts a lowercase credential assignment the same as an uppercase one', (
   expect(redactText('db_password_file=/run/secrets/db_password_v2', REDACTION_RULES, {}).redactedCount).toBe(0)
 })
 
+test('redacts a letters-only password-class value and leaves an identifier with separators', () => {
+  for (const line of [
+    'DB_PASSWORD=correcthorsebatterystaple',
+    'DB_PASSWORD="correcthorsebatterystaple"',
+    'db_password=supersecretpassword',
+  ]) {
+    expect(redactText(line, REDACTION_RULES, {}).categories).toContain('env-key')
+  }
+  expect(redactText('TOKEN=some_long_identifier', REDACTION_RULES, {}).redactedCount).toBe(0)
+})
+
 test('leaves a reference to a path or URL under a credential-keyword name alone', () => {
   const references = [
     'DB_PASSWORD_FILE=/run/secrets/db_password_v2',
