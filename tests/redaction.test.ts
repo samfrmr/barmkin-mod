@@ -112,6 +112,17 @@ test('never redacts code expressions assigned to a *_KEY constant', () => {
   expect(text).toBe(source)
 })
 
+test('never redacts a path-valued variable whose name only contains a keyword as a substring', () => {
+  const source = [
+    'export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu',
+    'PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig',
+    'CONFIG_PATH=/usr/local/share/myapp2024',
+  ].join('\n')
+  const { text, redactedCount } = redactText(source, REDACTION_RULES, {})
+  expect(redactedCount).toBe(0)
+  expect(text).toBe(source)
+})
+
 test('never redacts code expressions assigned to a *_TOKEN/*_PASSWORD/*_CREDENTIALS constant', () => {
   const source = [
     'CSRF_TOKEN = generate_csrf_token()',

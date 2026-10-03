@@ -224,8 +224,8 @@ async function writeAuditRow($: any, home: string, row: Omit<AuditEntry, 'sessio
   let existing = ''
   try {
     existing = await $.fs.read(path)
-  } catch {
-    existing = ''
+  } catch (error) {
+    if (!String(error).includes('ENOENT')) return
   }
   await $.fs.write(path, appendAndTrim(existing, full, MAX_AUDIT_LINES))
 }
@@ -372,7 +372,13 @@ async function sessionStartHook($: any, e: any, next: any) {
     // $.settings.read() unavailable or refused on this build; nothing to warn about
   }
 
-  if (statusLines.length > 0) $.ui.status(statusLines.join(' | '))
+  if (statusLines.length > 0) {
+    try {
+      $.ui.status(statusLines.join(' | '))
+    } catch {
+      // no status surface on this build; the commands below still register
+    }
+  }
 
   try {
     await $.command.register({ name: 'barmkin-mod-findings', description: 'Open the barmkin-mod SAST findings pane' })
@@ -588,9 +594,10 @@ async function redactionCatch($: any, e: any, next: any) {
 // available to a hook, so it's read via a plain (non-login, no profile
 // sourcing, so no stray stdout to confuse this with a failure) `sh -c`
 // probe; `sh` itself is expected to always be on the process's PATH even
-// when `semgrep` isn't. Cached for the session so this only runs once.
+// when `semgrep` isn't. Cached for the session once it succeeds, so a failed
+// or timed-out probe is retried rather than frozen in as an empty home.
 async function resolveHomeDir($: any): Promise<string> {
-  if (probedHomeDir !== null) return probedHomeDir
+  if (probedHomeDir) return probedHomeDir
   let home = ''
   try {
     const proc = await $.process.run(['sh', '-c', 'printf %s "$HOME"'], { timeoutMs: 2000 })
@@ -598,7 +605,7 @@ async function resolveHomeDir($: any): Promise<string> {
   } catch {
     home = ''
   }
-  probedHomeDir = home
+  if (home) probedHomeDir = home
   return home
 }
 
