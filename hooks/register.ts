@@ -208,6 +208,11 @@ function markTainted($: any, reason: string): Promise<void> {
   })
 }
 
+async function readTaint($: any): Promise<{ tainted: boolean; reason: string | null }> {
+  await taintWrites
+  return { tainted: await read($, tainted), reason: await read($, taintReason) }
+}
+
 async function taintForScrub($: any, hiddenCount: number, source: string): Promise<void> {
   if (hiddenCount <= INVISIBLE_CHAR_TAINT_THRESHOLD) return
   try {
@@ -425,9 +430,8 @@ async function mcpGuardCatch($: any, e: any, next: any) {
 // ---------------------------------------------------------------------------
 
 async function outwardEffectGuardHook($: any, e: any, next: any) {
-  const isTainted = await read($, tainted)
+  const { tainted: isTainted, reason } = await readTaint($)
   if (isTainted && typeof e.command === 'string' && isOutwardEffectCommand(e.command)) {
-    const reason = await read($, taintReason)
     return {
       deny:
         'barmkin-mod: this session is handling untrusted content (' +
@@ -729,9 +733,8 @@ async function sessionSendCatch($: any, e: any, next: any) {
 }
 
 async function agentSpawnHook($: any, e: any, next: any) {
-  const isTainted = await read($, tainted)
+  const { tainted: isTainted, reason } = await readTaint($)
   if (isTainted) {
-    const reason = await read($, taintReason)
     return {
       deny:
         'barmkin-mod: subagent spawn blocked while this session is tainted (' +
@@ -795,7 +798,7 @@ async function findingsPaneHook($: any, e: any, next: any) {
 }
 
 async function hudHook($: any, e: any, next: any) {
-  const isTainted = await read($, tainted)
+  const { tainted: isTainted } = await readTaint($)
   const verdict = await read($, lastVerdict)
   if (!isTainted && !verdict) return next(e)
 
@@ -819,8 +822,7 @@ async function findingsCommandHook($: any) {
 }
 
 async function statusCommandHook($: any) {
-  const isTainted = await read($, tainted)
-  const reason = await read($, taintReason)
+  const { tainted: isTainted, reason } = await readTaint($)
   const verdict = await read($, lastVerdict)
   const breakerUntil = await read($, breakerOpenUntil)
   const lines = [
