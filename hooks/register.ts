@@ -38,7 +38,7 @@ import { neutralizeDescription, parseMcpServerName, isAllowedServer } from './li
 import { parseSemgrepJson, formatFindingsContext, worstSeverity, buildSemgrepCandidates } from './lib/sast'
 import { extractResultText, appendContext, withholdResult } from './lib/tool-result'
 import { meetsMinimumVersion, MIN_CLAUDE_CODE_VERSION } from './lib/version'
-import { recordAudit, type AuditEntry } from './lib/audit'
+import { recordAudit, type AuditEntry, type AuditStore } from './lib/audit'
 import { scrubAndRedactMessageContent } from './lib/session-append'
 import { checkPosture } from './lib/posture'
 
@@ -94,9 +94,6 @@ const JEV_TIMEOUT_MS = 700
 // piece of content taints the session: a payload smuggled one invisible code
 // point per byte runs well past this.
 const INVISIBLE_CHAR_TAINT_THRESHOLD = 32
-// Session.start deletes per-session audit files not written within this many
-// days, so a long-lived install's ~/.claude doesn't fill with one per session.
-const AUDIT_RETENTION_DAYS = 30
 // This plugin's own manifest name, as it appears before the `@marketplace`
 // suffix in a managed prependPlugins entry (R16's posture check).
 const PLUGIN_NAME = 'barmkin-mod'
@@ -205,24 +202,18 @@ async function callJevSystemOne(
 // read-modify-write the same file and drop each other's rows.
 // ---------------------------------------------------------------------------
 
-function appendAudit($: any, entry: Omit<AuditEntry, 'ts' | 'session'>): void {
-  void recordAudit($, () => resolveHomeDir($), entry)
+function auditStore($: any): AuditStore {
+  return {
+    home: () => resolveHomeDir($),
+    session: () => $.session.id(),
+    read: (path) => $.fs.read(path),
+    missing: async (path) => (await $.process.run(['sh', '-c', 'test -e "$1"', 'sh', path], { timeoutMs: 5000 })).exitCode === 1,
+    write: (path, text) => $.fs.write(path, text),
+  }
 }
 
-// Runs once per session.start, never awaited by it: deletes per-session audit
-// files not written within AUDIT_RETENTION_DAYS. Best-effort like every other
-// audit write; a failure just leaves the files for next time.
-async function pruneAuditLogs($: any): Promise<void> {
-  const home = await resolveHomeDir($)
-  if (!home) return
-  try {
-    await $.process.run(
-      ['find', home + '/.claude', '-maxdepth', '1', '-name', 'barmkin-mod-audit-*.jsonl', '-mtime', '+' + AUDIT_RETENTION_DAYS, '-delete'],
-      { timeoutMs: 5000 },
-    )
-  } catch {
-    // best-effort only
-  }
+function appendAudit($: any, entry: Omit<AuditEntry, 'ts' | 'session'>): void {
+  void recordAudit(auditStore($), entry)
 }
 
 // Shared by every R7 call site (the outermost redaction pass, tool.describe,
@@ -327,7 +318,6 @@ async function screenContent(
 
 async function sessionStartHook($: any, e: any, next: any) {
   const statusLines: string[] = []
-  void pruneAuditLogs($)
 
   try {
     const version = await $.session.version()

@@ -1,30 +1,28 @@
 import { expect, test } from 'claude-code/testing'
-import { appendAndTrim, auditLogPath, recordAudit, createSerialQueue, type AuditEntry } from '../hooks/lib/audit'
+import { appendAndTrim, auditLogPath, recordAudit, createSerialQueue, type AuditEntry, type AuditStore } from '../hooks/lib/audit'
 
 const sampleEntry: AuditEntry = { ts: 1700000000000, session: 'abc123', event: 'screen', tool: 'fetch:WebFetch', decision: 'escalate', reason: 'scored 0.60 on the injection question' }
 
 const LOG = '/home/u/.claude/barmkin-mod-audit-sess.jsonl'
 const screen = { event: 'screen', tool: 'fetch:WebFetch', decision: 'pass', reason: 'scored 0.10' }
 
-function fakeHost(initial: Record<string, string> = {}, readError?: string) {
-  const files = new Map(Object.entries(initial))
-  const host = {
-    session: { id: async () => 'sess' },
-    fs: {
-      read: async (path: string) => {
-        if (readError) throw new Error(readError)
-        if (!files.has(path)) throw new Error('no such file')
-        return files.get(path) as string
-      },
-      write: async (path: string, text: string) => {
-        files.set(path, text)
-      },
+function fakeStore(options: { home?: string; initial?: Record<string, string>; readError?: string } = {}) {
+  const files = new Map(Object.entries(options.initial ?? {}))
+  const state = { home: options.home ?? '/home/u' }
+  const store: AuditStore = {
+    home: async () => state.home,
+    session: async () => 'sess',
+    read: async (path) => {
+      if (options.readError) throw new Error(options.readError)
+      if (!files.has(path)) throw new Error('no such file')
+      return files.get(path) as string
     },
-    process: {
-      run: async (argv: string[]) => ({ exitCode: files.has(argv[4]) ? 0 : 1, stdout: '', stderr: '' }),
+    missing: async (path) => !files.has(path),
+    write: async (path, text) => {
+      files.set(path, text)
     },
   }
-  return { host, files }
+  return { store, files, state }
 }
 
 function rowsOf(text: string | undefined): string[] {
@@ -76,32 +74,30 @@ test('a session id can never name a path outside ~/.claude', () => {
 })
 
 test('overlapping recordings on the production write path all land in the log', async () => {
-  const { host, files } = fakeHost()
-  const home = async () => '/home/u'
-  await Promise.all(['first', 'second', 'third'].map((reason) => recordAudit(host, home, { ...screen, reason })))
+  const { store, files } = fakeStore()
+  await Promise.all(['first', 'second', 'third'].map((reason) => recordAudit(store, { ...screen, reason })))
   expect(rowsOf(files.get(LOG))).toEqual(['first', 'second', 'third'])
 })
 
 test('a transient read error on an existing log leaves its rows in place', async () => {
   const existing = JSON.stringify({ ...sampleEntry, reason: 'earlier' }) + '\n'
-  const { host, files } = fakeHost({ [LOG]: existing }, 'EIO: input/output error')
-  await recordAudit(host, async () => '/home/u', { ...screen, reason: 'later' })
+  const { store, files } = fakeStore({ initial: { [LOG]: existing }, readError: 'EIO: input/output error' })
+  await recordAudit(store, { ...screen, reason: 'later' })
   expect(files.get(LOG)).toBe(existing)
 })
 
 test('the first row creates a missing log whatever the read error says', async () => {
-  const { host, files } = fakeHost({}, 'ENOTFOUND: resource is gone')
-  await recordAudit(host, async () => '/home/u', screen)
+  const { store, files } = fakeStore({ readError: 'ENOTFOUND: resource is gone' })
+  await recordAudit(store, screen)
   expect(rowsOf(files.get(LOG))).toEqual([screen.reason])
 })
 
 test('a failed home lookup writes nothing, and a later successful one writes', async () => {
-  const { host, files } = fakeHost()
-  let home = ''
-  await recordAudit(host, async () => home, screen)
+  const { store, files, state } = fakeStore({ home: '' })
+  await recordAudit(store, screen)
   expect(files.size).toBe(0)
-  home = '/home/u'
-  await recordAudit(host, async () => home, screen)
+  state.home = '/home/u'
+  await recordAudit(store, screen)
   expect(rowsOf(files.get(LOG))).toEqual([screen.reason])
 })
 

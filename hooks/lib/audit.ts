@@ -1,7 +1,7 @@
 // Durable audit log (R12): names each session's file, bounds its rows, and
-// writes rows one at a time through one serial queue. Takes the host's `$`
-// and a home-directory resolver, so the real write path can be exercised
-// against a fake `$` (register.ts passes the live one and its cached probe).
+// writes rows one at a time through one serial queue. The host is reached
+// only through the plain AuditStore functions register.ts supplies, so this
+// module never receives the mods API object itself.
 
 export interface AuditEntry {
   ts: number
@@ -14,6 +14,14 @@ export interface AuditEntry {
   // through text that was already safe for this reason (a classifier
   // verdict's `reason`, a fixed guard message), never tool input/output.
   reason: string
+}
+
+export interface AuditStore {
+  home(): Promise<string>
+  session(): Promise<string>
+  read(path: string): Promise<string>
+  missing(path: string): Promise<boolean>
+  write(path: string, text: string): Promise<void>
 }
 
 // Each session gets its own file, so two Claude Code sessions running at
@@ -61,30 +69,21 @@ export function createSerialQueue(): (task: () => Promise<void>) => Promise<void
 
 const enqueueAuditRow = createSerialQueue()
 
-export function recordAudit(
-  $: any,
-  resolveHome: () => Promise<string>,
-  entry: Omit<AuditEntry, 'ts' | 'session'>,
-): Promise<void> {
+export function recordAudit(store: AuditStore, entry: Omit<AuditEntry, 'ts' | 'session'>): Promise<void> {
   const row = { ts: Date.now(), ...entry }
-  return enqueueAuditRow(() => writeAuditRow($, resolveHome, row))
+  return enqueueAuditRow(() => writeAuditRow(store, row))
 }
 
-async function writeAuditRow(
-  $: any,
-  resolveHome: () => Promise<string>,
-  row: Omit<AuditEntry, 'session'>,
-): Promise<void> {
-  const home = await resolveHome()
+async function writeAuditRow(store: AuditStore, row: Omit<AuditEntry, 'session'>): Promise<void> {
+  const home = await store.home()
   if (!home) return
-  const session = await $.session.id()
+  const session = await store.session()
   const path = auditLogPath(home, session)
   let existing = ''
   try {
-    existing = await $.fs.read(path)
+    existing = await store.read(path)
   } catch {
-    const probe = await $.process.run(['sh', '-c', 'test -e "$1"', 'sh', path], { timeoutMs: 5000 })
-    if (probe.exitCode !== 1) return
+    if (!(await store.missing(path))) return
   }
-  await $.fs.write(path, appendAndTrim(existing, { ...row, session }, MAX_AUDIT_LINES))
+  await store.write(path, appendAndTrim(existing, { ...row, session }, MAX_AUDIT_LINES))
 }
