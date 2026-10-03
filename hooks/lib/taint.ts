@@ -144,7 +144,6 @@ const INJECTION_HEURISTIC_PATTERNS: RegExp[] = [
 // payload this way). A comment alone is routine (issue/PR templates), so on
 // its own it scores below the default taintAt; alongside a phrase match it
 // adds weight like one more pattern.
-const HIDDEN_HTML_COMMENT = /<!--[\s\S]*?-->/
 const HIDDEN_COMMENT_ALONE_SCORE = 0.3
 
 // Degraded-mode screen used when no Jev endpoint is configured, or the
@@ -153,7 +152,8 @@ const HIDDEN_COMMENT_ALONE_SCORE = 0.3
 // own, since it has no Noul-style calibration behind it.
 export function heuristicInjectionScore(text: string): number {
   const hits = INJECTION_HEURISTIC_PATTERNS.filter((re) => re.test(text)).length
-  const hasHiddenComment = HIDDEN_HTML_COMMENT.test(text)
+  const open = text.indexOf('<!--')
+  const hasHiddenComment = open !== -1 && text.indexOf('-->', open + 4) !== -1
   if (hits === 0) return hasHiddenComment ? HIDDEN_COMMENT_ALONE_SCORE : 0
   return Math.min(0.5 + (hits + (hasHiddenComment ? 1 : 0)) * 0.15, 0.8)
 }
