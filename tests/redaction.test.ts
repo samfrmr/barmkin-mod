@@ -280,6 +280,11 @@ test('redacts a JWT that follows a separator or a hyphen', () => {
   }
 })
 
+test('counts a result and its model-visible text mirror once against the aggregate budget', () => {
+  const chunk = 'x'.repeat(14 * 1024)
+  expect(exceedsResultBudget({ result: [chunk, chunk, chunk, chunk], text: chunk })).toBe(false)
+})
+
 test('withholds a tool result whose strings together exceed the aggregate budget', () => {
   expect(exceedsResultBudget({ text: 'x'.repeat(40 * 1024) })).toBe(true)
   expect(exceedsResultBudget(['x'.repeat(14 * 1024), { stdout: 'y'.repeat(14 * 1024) }, 'z'.repeat(14 * 1024), 'w'.repeat(14 * 1024)])).toBe(false)

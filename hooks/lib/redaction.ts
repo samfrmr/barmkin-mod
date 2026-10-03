@@ -26,10 +26,12 @@ export function exceedsScanLimit(text: string): boolean {
 // each about 46 ms per quadratic rule (the value-side generic-key rule is the
 // only quadratic one measured), so 4 x 46 ms = about 185 ms per tool result,
 // under the 1-second guard budget. That computed bound is the accepted design.
-// Image reads take the same path: a Read image's base64 payload is text here,
-// so an image whose base64 exceeds the 16 KiB per-string cap (roughly an image
-// file over 12 KiB) is withheld by this budget. That is the accepted limitation:
-// image reads above that size are unavailable.
+// The model-visible `text` mirror of a result repeats the same content, so it is
+// not added to the total; it still gets the per-string cap. A Read image's
+// base64 payload is one of the strings: it survives only while it fits the
+// per-string cap, roughly 12 KiB of image. Larger images are withheld with the
+// stated reason. That is the accepted limitation: image reads above that size
+// are unavailable.
 const MAX_RESULT_CHARS = 64 * 1024
 
 function textTotals(value: unknown): { total: number; longest: number } {
@@ -46,7 +48,8 @@ function textTotals(value: unknown): { total: number; longest: number } {
 
 export function exceedsResultBudget(result: unknown): boolean {
   const { total, longest } = textTotals(result)
-  return total > MAX_RESULT_CHARS || longest > MAX_SCANNED_CHARS
+  const rendered = typeof (result as { text?: unknown } | null)?.text === 'string' ? (result as { text: string }).text.length : 0
+  return total - rendered > MAX_RESULT_CHARS || longest > MAX_SCANNED_CHARS
 }
 
 // Replaces every secret match with a placeholder token, numbered per

@@ -478,12 +478,39 @@ async function taintScreenCatch($: any, e: any, next: any) {
 // any context a later hook in this file added -- before Claude reads it).
 // ---------------------------------------------------------------------------
 
+// Read's image variant carries its payload as base64 at result.result.base64
+// (flat) or result.result.file.base64 (file record). Gated on the Read tool so
+// an MCP result cannot hide plaintext there.
+function readImageBase64(e: any, result: any): string | undefined {
+  const payload = result.result
+  if (e.tool !== 'Read' || !payload || typeof payload !== 'object' || payload.type !== 'image') return undefined
+  const base64 = typeof payload.base64 === 'string' ? payload.base64 : payload.file?.base64
+  return typeof base64 === 'string' ? base64 : undefined
+}
+
+// Decodes an image payload that already passed the per-string cap and runs the
+// rules over its bytes, so a secret in a plaintext file with an image extension
+// is caught. The base64 text itself also goes through the normal redaction pass.
+function imagePayloadWithholdReason(base64: string): string | null {
+  let bytes: string
+  try {
+    bytes = atob(base64)
+  } catch {
+    return 'this Read image payload is not valid base64'
+  }
+  return containsAnySecret(bytes, REDACTION_RULES) ? 'this Read image payload contains a secret-shaped value' : null
+}
+
 async function redactionHook($: any, e: any, next: any) {
   const result = await next(e)
   if (!result || result.deny) return result
   if (exceedsResultBudget(result)) {
     return { deny: 'barmkin-mod: this tool result is larger than the redaction scan budget, so it was withheld' }
   }
+
+  const imageBase64 = readImageBase64(e, result)
+  const imageReason = imageBase64 === undefined ? null : imagePayloadWithholdReason(imageBase64)
+  if (imageReason) return { deny: 'barmkin-mod: ' + imageReason + ', so it was withheld' }
 
   let changed = false
   let hiddenCount = 0

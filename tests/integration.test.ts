@@ -111,6 +111,24 @@ test('withholds a Read image whose base64 payload is over the scan budget', asyn
   expect(out.deny).toContain('redaction scan budget')
 })
 
+test('withholds a small Read image whose decoded bytes hold a secret', async ($, on) => {
+  on('tool.call', () => ({ result: { type: 'image', base64: btoa('\x89PNG\r\n\x1a\n' + 'AWS_KEY=AKIAIOSFODNN7EXAMPLE') } }))
+  const out = await $.tool.call({ tool: 'Read', file_path: 'creds.png' })
+  expect(out.deny).toContain('secret-shaped')
+})
+
+test('withholds a file-record Read image whose decoded bytes hold a secret', async ($, on) => {
+  on('tool.call', () => ({ result: { type: 'image', file: { base64: btoa('AWS_KEY=AKIAIOSFODNN7EXAMPLE'), type: 'image/png' } } }))
+  const out = await $.tool.call({ tool: 'Read', file_path: 'creds.png' })
+  expect(out.deny).toContain('secret-shaped')
+})
+
+test('withholds a Read image whose payload is not valid base64', async ($, on) => {
+  on('tool.call', () => ({ result: { type: 'image', base64: 'abc!' } }))
+  const out = await $.tool.call({ tool: 'Read', file_path: 'screenshot.png' })
+  expect(out.deny).toContain('not valid base64')
+})
+
 test('passes a small Read image payload through unchanged', async ($, on) => {
   const base64 = btoa('\x89PNG\r\n\x1a\n' + 'A'.repeat(1024))
   on('tool.call', () => ({ result: { type: 'image', base64 } }))
