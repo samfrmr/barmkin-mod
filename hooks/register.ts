@@ -202,8 +202,8 @@ async function callJevSystemOne(
 // log is a record of decisions already made elsewhere, not a decision point
 // of its own, so there's nothing for a `.catch` to hold here. Callers never
 // await it: the write is queued behind any earlier one and runs off the
-// calling hook's budget, and it's skipped entirely until session.start's
-// home-directory probe has finished, so no guard ever waits on that probe.
+// calling hook's budget, including the home-directory lookup it needs, so no
+// guard ever waits on that probe.
 // One file per session, so concurrent Claude Code sessions never
 // read-modify-write the same file and drop each other's rows.
 // ---------------------------------------------------------------------------
@@ -211,21 +211,22 @@ async function callJevSystemOne(
 const enqueueAuditWrite = createSerialQueue()
 
 function appendAudit($: any, entry: Omit<AuditEntry, 'ts' | 'session'>): void {
-  if (!probedHomeDir) return
-  const home = probedHomeDir
   const row = { ts: Date.now(), ...entry }
-  void enqueueAuditWrite(() => writeAuditRow($, home, row))
+  void enqueueAuditWrite(() => writeAuditRow($, row))
 }
 
-async function writeAuditRow($: any, home: string, row: Omit<AuditEntry, 'session'>): Promise<void> {
+async function writeAuditRow($: any, row: Omit<AuditEntry, 'session'>): Promise<void> {
+  const home = await resolveHomeDir($)
+  if (!home) return
   const session = await $.session.id()
   const full: AuditEntry = { ...row, session }
   const path = auditLogPath(home, session)
   let existing = ''
   try {
     existing = await $.fs.read(path)
-  } catch (error) {
-    if (!String(error).includes('ENOENT')) return
+  } catch {
+    const probe = await $.process.run(['sh', '-c', 'test -e "$1"', 'sh', path], { timeoutMs: 5000 })
+    if (probe.exitCode !== 1) return
   }
   await $.fs.write(path, appendAndTrim(existing, full, MAX_AUDIT_LINES))
 }
@@ -503,7 +504,7 @@ async function readTaintHook($: any, e: any, next: any) {
 
   const text = extractResultText(result)
   if (!text) return result
-  const verdict = await screenContent($, text, 'read:' + e.file_path, e.tool_use_id)
+  const verdict = await screenContent($, text, 'read:outside-cwd', e.tool_use_id)
   if (verdict.decision === 'deny') {
     return withholdResult(result, "barmkin-mod: withheld this file's content (" + verdict.reason + '). Ask the user before retrying.')
   }
