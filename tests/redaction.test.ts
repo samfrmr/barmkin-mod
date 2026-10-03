@@ -267,6 +267,12 @@ test('withholds text longer than the scan limit as a whole', () => {
   expect(containsAnySecret('plain words '.repeat(3000), REDACTION_RULES)).toBe(false)
 })
 
+test('leaves a path named after a credential keyword alone', () => {
+  for (const line of ['DB_PASSWORD_FILE=/run/secrets/db_password_v2', 'TOKENIZER_PATH=/opt/models/tokenizer_v2_large']) {
+    expect(redactText(line, REDACTION_RULES, {}).redactedCount).toBe(0)
+  }
+})
+
 test('withholds a tool result whose strings together exceed the aggregate budget', () => {
   expect(exceedsResultBudget({ text: 'x'.repeat(40 * 1024) })).toBe(true)
   expect(exceedsResultBudget(['x'.repeat(14 * 1024), { stdout: 'y'.repeat(14 * 1024) }, 'z'.repeat(14 * 1024), 'w'.repeat(14 * 1024)])).toBe(false)

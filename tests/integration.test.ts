@@ -106,18 +106,38 @@ test('withholds a prompt over the scan limit instead of replacing it with a plac
 })
 
 test('exempts a Read image payload with an image header from the text budget', async ($, on) => {
-  const base64 = btoa('\x89PNG\r\n\x1a\n' + 'A'.repeat(70 * 1024))
+  const base64 = btoa('\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR' + 'A'.repeat(70 * 1024))
   on('tool.call', () => ({ result: { type: 'image', base64 } }))
   const out = await $.tool.call({ tool: 'Read', file_path: 'screenshot.png' })
   expect(out.deny).toBeUndefined()
   expect(out.result.base64).toBe(base64)
 })
 
-test('does not exempt a non-image Read payload from the text budget', async ($, on) => {
-  const base64 = btoa('plain text '.repeat(7 * 1024))
+test('withholds a non-image Read payload, even a small one', async ($, on) => {
+  const base64 = btoa('AWS_KEY=AKIAIOSFODNN7EXAMPLE and more plain text here')
   on('tool.call', () => ({ result: { type: 'image', base64 } }))
   const out = await $.tool.call({ tool: 'Read', file_path: 'creds.png' })
-  expect(out.deny).toContain('redaction scan budget')
+  expect(out.deny).toContain('not a recognised image format')
+  expect(out.result).toBeUndefined()
+})
+
+test('withholds a plaintext file that starts with a PNG signature but no IHDR header', async ($, on) => {
+  const base64 = btoa('\x89PNG\r\n\x1a\n' + 'AWS_KEY=AKIAIOSFODNN7EXAMPLE '.repeat(3))
+  on('tool.call', () => ({ result: { type: 'image', base64 } }))
+  const out = await $.tool.call({ tool: 'Read', file_path: 'creds.png' })
+  expect(out.deny).toContain('not a recognised image format')
+})
+
+test('withholds an MCP result whose joined text exceeds the scan limit even though each block fits', async ($, on) => {
+  on('tool.call', () => ({
+    result: [
+      { type: 'text', text: 'a'.repeat(10 * 1024) },
+      { type: 'text', text: 'AWS_KEY=AKIAIOSFODNN7EXAMPLE ' + 'b'.repeat(10 * 1024) },
+    ],
+  }))
+  const out = await $.tool.call({ tool: 'mcp__github__list_issues' })
+  expect(JSON.stringify(out)).toContain('scan limit')
+  expect(JSON.stringify(out)).not.toContain('AKIAIOSFODNN7EXAMPLE')
 })
 
 test('/barmkin-mod-status reports taint and the last verdict after an escalation', async ($, on) => {
