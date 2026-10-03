@@ -191,9 +191,21 @@ async function callJevSystemOne(
 // INVISIBLE_CHAR_TAINT_THRESHOLD characters.
 // The first reason recorded for a session wins, so a later taint never
 // replaces the evidence the deny message and the verdict already show.
-async function markTainted($: any, reason: string): Promise<void> {
-  await update($, tainted, () => true)
-  await update($, taintReason, (current: string | null) => current ?? reason)
+let taintWrites: Promise<unknown> = Promise.resolve()
+
+// Taint writes run one at a time, in call order, so a fire-and-forget scrub
+// cannot interleave with another write or land after a prompt.submit reset.
+function serializeTaintWrite<T>(write: () => Promise<T>): Promise<T> {
+  const run = taintWrites.then(write)
+  taintWrites = run.catch(() => {})
+  return run
+}
+
+function markTainted($: any, reason: string): Promise<void> {
+  return serializeTaintWrite(async () => {
+    await update($, tainted, () => true)
+    await update($, taintReason, (current: string | null) => current ?? reason)
+  })
 }
 
 async function taintForScrub($: any, hiddenCount: number, source: string): Promise<void> {
@@ -346,8 +358,10 @@ async function sessionStartHook($: any, e: any, next: any) {
 // ---------------------------------------------------------------------------
 
 async function promptSubmitHook($: any, e: any, next: any) {
-  await update($, tainted, () => false)
-  await update($, taintReason, () => null)
+  await serializeTaintWrite(async () => {
+    await update($, tainted, () => false)
+    await update($, taintReason, () => null)
+  })
 
   if (typeof e.text !== 'string') return next(e)
   if (exceedsScanLimit(e.text)) {
