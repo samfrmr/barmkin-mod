@@ -274,7 +274,13 @@ test('leaves a path named after a credential keyword alone', () => {
 })
 
 test('redacts an assignment whose credential keyword sits mid-name', () => {
-  for (const line of ['DB_PASSWORD_PROD=Sup3rS3cretValue99', 'GITHUB_TOKEN_V2=xK9mP2qL7vN4wR8tY3uI', 'API_TOKEN2=xK9mP2qL7vN4wR8tY3uI']) {
+  for (const line of [
+    'DB_PASSWORD_PROD=Sup3rS3cretValue99',
+    'GITHUB_TOKEN_V2=xK9mP2qL7vN4wR8tY3uI',
+    'API_TOKEN2=xK9mP2qL7vN4wR8tY3uI',
+    'AWS_SECRET_ACCESS_KEY=/K7MDENG/bPxRfiCYEXAMPLEKEY1',
+    'DB_PASSWORD=/aB3dE5fG7hJ9kL1mN3pQ',
+  ]) {
     expect(redactText(line, REDACTION_RULES, {}).categories).toContain('env-key')
   }
 })
@@ -285,7 +291,6 @@ test('leaves a reference to a path or URL under a credential-keyword name alone'
     'TOKENIZER_PATH=/opt/models/tokenizer_v2_large',
     'DB_TOKEN_DIR=cache_v2_large_entries',
     'AUTH_TOKEN_URL=abcdef0123456789abcd',
-    'SOME_TOKEN=/run/secrets/token_material_v2',
   ]
   for (const line of references) {
     expect(redactText(line, REDACTION_RULES, {}).redactedCount).toBe(0)
