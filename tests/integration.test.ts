@@ -92,6 +92,14 @@ test('a user-typed prompt with a pasted secret is redacted before the turn start
   expect(answer.text).not.toContain('sk-ABCDEFGHIJ1234567890')
 })
 
+test('redacts an AWS key split by a zero-width character in a user-typed prompt', async ($, on) => {
+  on('ui.log', () => ({ value: undefined }))
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  const answer = await $.prompt.submit({ text: 'my key is AKIA​IOSFODNN7EXAMPLE, use it' })
+  expect(answer.text).toContain('[REDACTED:aws-key#')
+  expect(answer.text).not.toContain('​')
+})
+
 test('a prompt with nothing to redact passes through unchanged', async ($, on) => {
   on('prompt.submit', ($, e) => ({ text: e.text }))
   const answer = await $.prompt.submit({ text: 'please run the test suite' })
