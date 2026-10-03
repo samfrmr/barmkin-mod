@@ -1,6 +1,6 @@
 # barmkin-mod
 
-A [Claude Code mods](https://code.claude.com/docs/en/plugins/mods/overview) security layer: secret redaction, untrusted-content taint tracking with an injection screen, an MCP tool-poisoning guard, an agent-to-agent firewall, a SAST findings UI (semgrep), and a Jev System One classifier gateway with an explanation surface.
+A [Claude Code mods](https://code.claude.com/docs/en/plugins/mods/overview) security layer: secret redaction, untrusted-content taint tracking with an injection screen, an MCP tool-poisoning guard, an agent-to-agent firewall, a SAST findings UI (semgrep), and a Jev System One classifier gateway with an explanation surface, an invisible-Unicode/bidi/ANSI scrubber, a durable audit log, and a posture self-check.
 
 This is a standalone project, separate from [barmkin](https://github.com/samfrmr/barmkin). It does not call barmkin's internal classifier gateway; its Jev client talks to an operator-configured OpenRouter- or Vercel-AI-Gateway-style endpoint that speaks the same `/v1/systemone` wire format (see [Jev System One client](#jev-system-one-client)).
 
@@ -25,7 +25,7 @@ CI validates against Claude Code 2.1.287+ because the sandbox this plugin was de
 | 6 | Jev System One classifier gateway | shared by capabilities 2 and 4 |
 | 7 | Classifier explanation surface | `$.ui.notice` under the pending permission dialog, an `AbovePrompt` HUD band, `/barmkin-mod-status` |
 | 8 | Invisible-Unicode, bidi and ANSI scrubber | the outermost `tool.call` redaction pass, `tool.describe`, `session.receive`, the `session.append` backstop |
-| 9 | Durable audit log + `session.append` redaction backstop | `session.append` (rewrite), called from every guard decision above |
+| 9 | Durable audit log + `session.append` redaction backstop | `session.append` (rewrite) for the backstop; the audit log is written from every guard decision above, and pruned at `session.start` |
 | 10 | Posture self-check | `session.start` (`$.settings.read`, `$.ui.status`) |
 
 ### Secret redaction
@@ -149,7 +149,7 @@ This never blocks anything — it's a status line, not a guard — and a setting
   | Invisible-Unicode/bidi/ANSI scrubber | Yes for the sites this bundle wires it into (`tool.call`, `tool.describe`, `session.receive`, `session.append`); a future screen of `skill.prompt`/`prompt.context` content would need the seat below |
   | Any future `skill.prompt` or `prompt.context`/`prompt.section` screen (not built in this bundle) | **No** -- needs this mod named in managed `prependPlugins` ahead of `sec-default@builtin`, or `sec-default` forwards that content past the user tier before this mod ever sees it |
 
-- **Fail closed, with a 1-second budget.** Every hook that can deny/consume/withhold has a `.catch` that does so on failure (`next.error.kind` names whether it was a throw or a timeout). Purely advisory hooks (SAST's inline findings, the HUD) have none, so the documented no-`.catch` default applies: a pre-`next()` failure skips the hook silently (the action proceeds without the annotation), a post-`next()` failure leaves the result as `next()` produced it. Neither path can loosen a decision this mod or anything upstream of it already made.
+- **Fail closed, with a 1-second budget.** Every hook that can deny/consume/withhold has a `.catch` that does so on failure (`next.error.kind` names whether it was a throw or a timeout). The one exception is the `session.append` backstop, which can't be made to deny and so has no `.catch` (see [Durable audit log and the `session.append` backstop](#durable-audit-log-and-the-sessionappend-backstop)). Purely advisory hooks (SAST's inline findings, the HUD) have none, so the documented no-`.catch` default applies: a pre-`next()` failure skips the hook silently (the action proceeds without the annotation), a post-`next()` failure leaves the result as `next()` produced it. Neither path can loosen a decision this mod or anything upstream of it already made.
 - **Never looser than decided.** Nothing in this mod uses `tool.check`. Every guard acts on `tool.call` with `{deny}`, which is unspoofable and runs before the permission check — not `tool.check`'s `ask`, which [in auto mode reaches the server-side classifier, not a human](https://code.claude.com/docs/en/plugins/mods/events#approve-or-refuse-a-tool-call-before-the-user-is-asked). A guard here only ever adds a deny/consume/withhold on top of whatever the permission rules, settings hooks, and mode already decided; it never answers `allow`.
 - **This is not an enforcement floor.** `--safe-mode`, three hooks-worker crashes, or a managed `allowManagedModsOnly: false` fleet policy without `prependPlugins` can all mean this mod never loads. It complements an enforcement floor delivered as a *managed settings hook* (such as barmkin's), which survives all three; it is not a substitute for one.
 
