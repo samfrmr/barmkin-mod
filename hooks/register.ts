@@ -373,8 +373,8 @@ async function promptSubmitHook($: any, e: any, next: any) {
     return { deny: 'barmkin-mod: your message is longer than the 16 KiB scan limit, so it was withheld' }
   }
   const { text, redactedCount } = redactText(scrubInvisible(e.text).text, REDACTION_RULES, redactionCounters)
-  if (redactedCount === 0) return next(e)
-  $.ui.log('barmkin-mod: redacted ' + redactedCount + ' likely secret(s) from your message before sending it')
+  if (redactedCount > 0) $.ui.log('barmkin-mod: redacted ' + redactedCount + ' likely secret(s) from your message before sending it')
+  if (text === e.text) return next(e)
   return next({ ...e, text })
 }
 
