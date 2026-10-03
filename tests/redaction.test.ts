@@ -163,13 +163,13 @@ test('never redacts part of an unquoted token or a quoted literal used in an exp
 
 // R1 security-review corpus (data/barmkin-mod-security-review/report.md F2,
 // section 1.4): one vector per category the review's node probe ran against
-// main's rules. 16 of 19 flip from missed to redacted with this refresh;
-// the remaining 3 are documented, deliberate gaps (see the final block) --
-// not silently dropped, since inventing an unprincipled regex for a bare
-// high-entropy string risks corrupting ordinary text (hashes, ids) with no
-// real detection benefit. The two "baseline" vectors below already redacted
-// on main; they're here only so a future rule-set change can't silently
-// regress them.
+// main's rules. 14 of 19 flip from missed to redacted with this refresh;
+// 2 are baselines that already redacted on main, and the remaining 3 are
+// documented, deliberate gaps (see the final block) -- not silently dropped,
+// since inventing an unprincipled regex for a bare high-entropy string
+// risks corrupting ordinary text (hashes, ids) with no real detection
+// benefit. The baseline vectors below are here only so a future rule-set
+// change can't silently regress them.
 test('F2 corpus: vendor-prefix vectors the refresh newly catches', () => {
   const vectors: Array<[string, string]> = [
     ['anthropic sk-ant-api03 bare', 'sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-ABCDEFGHIJKLMNOPQRSTUVWXYZ'],

@@ -118,7 +118,7 @@ At `session.start`, a `$.settings.read()` pair (the merged settings, and `{ sour
 - `sec-default` is seated ahead of it in that list, so it still can't see `skill.prompt`, `prompt.context` or `prompt.section` even though it is seated;
 - `disableSkillShellExecution` is unset (the skill inline-shell bypass, F1, stays open);
 - the Bash sandbox is off (`sandbox.enabled` isn't `true`): this mod's taint-gated denies are the only barrier, with no OS-level egress floor underneath;
-- the session's permission mode is `bypassPermissions`;
+- the configured default permission mode (`permissions.defaultMode`) is `bypassPermissions`. A session started with `--dangerously-skip-permissions`, or switched to bypass at runtime, is not detected while the settings still say otherwise;
 - `mcp_server_allowlist` is empty (audit-only, every server is allowed to run tools).
 
 This never blocks anything — it's a status line, not a guard — and a settings read that fails or is refused is treated as "nothing to warn about" rather than surfaced as an error, consistent with this hook's existing fail-silent version check.
