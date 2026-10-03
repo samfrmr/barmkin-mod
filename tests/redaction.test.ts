@@ -187,8 +187,8 @@ test('never redacts part of an unquoted token or a quoted literal used in an exp
   expect(text).toBe(source)
 })
 
-// 19-sample corpus of vendor-prefix, assignment-name and known-gap vectors,
-// one per category the rule set covers. 14 of 19 are missed by main's rules
+// 20-sample corpus of vendor-prefix, assignment-name and known-gap vectors,
+// one per category the rule set covers. 15 of 20 are missed by main's rules
 // and redacted by this rule set; 2 are baselines that already redacted on
 // main, and the remaining 3 are documented, deliberate gaps (see the final
 // block) -- not silently dropped, since inventing an unprincipled regex for a
@@ -214,6 +214,7 @@ test('corpus: vendor-prefix vectors the rule set newly catches', () => {
     ['npm token', 'npm_' + 'A1b2C3d4E5f6'.repeat(3)],
     ['hf token', 'hf_' + 'A1b2C3d4E5f6'.repeat(3)],
     ['DB_PASSWORD env', 'DB_PASSWORD=Sup3rSecretPassw0rd'],
+    ['lowercase db_password config', 'db_password=Sup3rSecretPassw0rd'],
     ['API_TOKEN env', 'API_TOKEN=abcdef0123456789abcd'],
     ['postgres url w/ password', 'postgres://dbuser:S3cureP4ssw0rd@db.example.com:5432/mydb'],
     ['slack webhook', 'https://hooks.slack.com/' + 'services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX'],
@@ -281,6 +282,18 @@ test('redacts an assignment whose credential keyword sits mid-name', () => {
   ]) {
     expect(redactText(line, REDACTION_RULES, {}).categories).toContain('env-key')
   }
+})
+
+test('redacts a lowercase credential assignment the same as an uppercase one', () => {
+  for (const line of [
+    'db_password=Sup3rS3cretValue99',
+    'password = "Sup3rS3cretValue99"',
+    'api_token2=xK9mP2qL7vN4wR8tY3uI',
+    'github_pat_prod = "xK9mP2qL7vN4wR8tY3uI"',
+  ]) {
+    expect(redactText(line, REDACTION_RULES, {}).categories).toContain('env-key')
+  }
+  expect(redactText('db_password_file=/run/secrets/db_password_v2', REDACTION_RULES, {}).redactedCount).toBe(0)
 })
 
 test('leaves a reference to a path or URL under a credential-keyword name alone', () => {

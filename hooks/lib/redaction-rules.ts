@@ -59,7 +59,7 @@ export const REDACTION_RULES: RedactionRule[] = [
   {
     name: 'generic-key-env-assignment',
     pattern:
-      /\b(?=(?<name>[A-Z0-9_]*(?:(?<=_)KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|_PAT(?![A-Z]))[A-Z0-9_]*))\k<name>(?<!_FILE|_PATH|_DIR|_URL)[ \t]*=[ \t]*(?:(?<q>['"])(?!\$|\[REDACTED:)(?![^'"\s]*\$\{)(?=[^'"\s]*\d)[^'"\s]{16,}\k<q>(?![ \t]*[-+*\/%.[(])|(?!\$)(?=[^\s'"`()[\]{}.;,]*\d)[^\s'"`()[\]{}.;,]{16,}(?![^\s;,'"`]))/g,
+      /\b(?=(?<name>[A-Z0-9_]*(?:(?<=_)KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|_PAT(?![A-Z]))[A-Z0-9_]*))\k<name>(?<!_FILE|_PATH|_DIR|_URL)[ \t]*=[ \t]*(?:(?<q>['"])(?!\$|\[REDACTED:)(?![^'"\s]*\$\{)(?=[^'"\s]*\d)[^'"\s]{16,}\k<q>(?![ \t]*[-+*\/%.[(])|(?!\$)(?=[^\s'"`()[\]{}.;,]*\d)[^\s'"`()[\]{}.;,]{16,}(?![^\s;,'"`]))/gi,
     category: 'env-key',
     example: 'AWS_SECRET_KEY=abcdef0123456789',
   },
