@@ -10,7 +10,10 @@ export interface RedactionResult {
 // roughly quadratically in their input: measured on the current rule set,
 // 70 KB of repeated `SECRET=` takes about 0.9 s, so 16 KiB costs about 50 ms
 // per such rule. That keeps the full set comfortably inside the 1-second
-// guard budget. Longer text is withheld as a whole rather than scanned.
+// guard budget. The JWT rule was measured at about 75 ms on 16 KiB of `eyJ-`
+// runs before its start was anchored away from a hyphen, and is now linear
+// (under 1 ms on the same input), so it adds no quadratic term. Longer text is
+// withheld as a whole rather than scanned.
 const MAX_SCANNED_CHARS = 16 * 1024
 
 export function exceedsScanLimit(text: string): boolean {

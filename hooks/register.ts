@@ -18,6 +18,7 @@ import { atom, read, update } from 'claude-code'
 import { REDACTION_RULES } from './lib/redaction-rules'
 import { redactText, containsAnySecret, exceedsResultBudget, exceedsScanLimit } from './lib/redaction'
 import { scrubInvisible } from './lib/scrub'
+import { verifyImageBase64 } from './lib/image'
 import {
   isOutwardEffectCommand,
   composeScreen,
@@ -479,116 +480,13 @@ async function taintScreenCatch($: any, e: any, next: any) {
 // any context a later hook in this file added -- before Claude reads it).
 // ---------------------------------------------------------------------------
 
-const u8 = (b: string, i: number) => b.charCodeAt(i)
-const u16be = (b: string, i: number) => u8(b, i) * 256 + u8(b, i + 1)
-const u32be = (b: string, i: number) => u8(b, i) * 16777216 + u8(b, i + 1) * 65536 + u8(b, i + 2) * 256 + u8(b, i + 3)
-const u32le = (b: string, i: number) => u8(b, i) + u8(b, i + 1) * 256 + u8(b, i + 2) * 65536 + u8(b, i + 3) * 16777216
-
-function validPng(b: string): boolean {
-  let pos = 8
-  for (let first = true; pos + 8 <= b.length; first = false) {
-    const len = u32be(b, pos)
-    const type = b.slice(pos + 4, pos + 8)
-    if (first && (type !== 'IHDR' || len !== 13)) return false
-    pos += 12 + len
-    if (pos > b.length) return false
-    if (type === 'IEND') return pos === b.length
-  }
-  return false
-}
-
-function validJpeg(b: string): boolean {
-  let pos = 2
-  while (pos + 4 <= b.length) {
-    if (u8(b, pos) !== 0xff) return false
-    const marker = u8(b, pos + 1)
-    if (marker === 0xff) {
-      pos += 1
-    } else if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
-      pos += 2
-    } else if (marker === 0xd9) {
-      return false
-    } else {
-      const len = u16be(b, pos + 2)
-      if (len < 2 || pos + 2 + len > b.length) return false
-      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return len >= 8
-      pos += 2 + len
-    }
-  }
-  return false
-}
-
-function gifSubBlocksEnd(b: string, pos: number): number {
-  while (pos < b.length) {
-    const size = u8(b, pos)
-    pos += 1 + size
-    if (pos > b.length) return -1
-    if (size === 0) return pos
-  }
-  return -1
-}
-
-function validGif(b: string): boolean {
-  if (b.length < 13) return false
-  let pos = 13
-  const flags = u8(b, 10)
-  if (flags & 0x80) pos += 3 * 2 ** ((flags & 7) + 1)
-  while (pos < b.length) {
-    const introducer = u8(b, pos)
-    if (introducer === 0x3b) return pos + 1 === b.length
-    if (introducer === 0x21) {
-      pos = gifSubBlocksEnd(b, pos + 2)
-    } else if (introducer === 0x2c) {
-      if (pos + 10 > b.length) return false
-      const imageFlags = u8(b, pos + 9)
-      pos += 10
-      if (imageFlags & 0x80) pos += 3 * 2 ** ((imageFlags & 7) + 1)
-      pos = gifSubBlocksEnd(b, pos + 1)
-    } else {
-      return false
-    }
-    if (pos < 0) return false
-  }
-  return false
-}
-
-function validWebp(b: string): boolean {
-  if (b.length < 20 || b.slice(8, 12) !== 'WEBP' || u32le(b, 4) + 8 !== b.length) return false
-  if (!['VP8 ', 'VP8L', 'VP8X'].includes(b.slice(12, 16))) return false
-  let pos = 12
-  while (pos + 8 <= b.length) {
-    const size = u32le(b, pos + 4)
-    pos += 8 + size + (size & 1)
-    if (pos > b.length) return false
-  }
-  return pos === b.length
-}
-
-// Structural check of a Read image payload: the whole base64 is decoded and the
-// container of PNG, JPEG, GIF or WebP is walked to its end. A plaintext file
-// that only starts with an image signature, or carries bytes after the format's
-// end marker, fails. Availability cost: an image with a corrupt or unrecognised
-// structure is withheld as unreadable rather than passed through unscanned.
-function isImageBase64(payload: string): boolean {
-  let bytes: string
-  try {
-    bytes = atob(payload)
-  } catch {
-    return false
-  }
-  if (bytes.startsWith('\x89PNG\r\n\x1a\n')) return validPng(bytes)
-  if (bytes.startsWith('\xff\xd8\xff')) return validJpeg(bytes)
-  if (bytes.startsWith('GIF87a') || bytes.startsWith('GIF89a')) return validGif(bytes)
-  if (bytes.startsWith('RIFF')) return validWebp(bytes)
-  return false
-}
-
 // Read's image variant carries its payload as base64 at result.result.base64
 // (flat) or result.result.file.base64 (file record), which the plaintext secret
 // rules never match. Gated on the Read tool so an MCP result cannot hide
 // plaintext there. The payload is exempt from the scan and budget only once
-// isImageBase64 confirms it (see redactionHook); bytes inside a verified image
-// are not scanned, since they reach the transcript only as base64.
+// verifyImageBase64 confirms it (see redactionHook), which also scans the
+// image's metadata text; the image data itself is not scanned, since it
+// reaches the transcript only as base64.
 function readImageBase64(e: any, result: any): string | undefined {
   const payload = result.result
   if (e.tool !== 'Read' || !payload || typeof payload !== 'object' || payload.type !== 'image') return undefined
@@ -611,8 +509,9 @@ async function redactionHook($: any, e: any, next: any) {
   const result = await next(e)
   if (!result || result.deny) return result
   const imageBase64 = readImageBase64(e, result)
-  if (imageBase64 !== undefined && !isImageBase64(imageBase64)) {
-    return { deny: 'barmkin-mod: this Read returned an image payload that is not a recognised image format, so it was withheld' }
+  if (imageBase64 !== undefined) {
+    const verdict = await verifyImageBase64(imageBase64)
+    if (!verdict.ok) return { deny: 'barmkin-mod: ' + verdict.reason + ', so it was withheld' }
   }
   if (exceedsResultBudget(omitImagePayload(result, imageBase64))) {
     return { deny: 'barmkin-mod: this tool result is larger than the redaction scan budget, so it was withheld' }
