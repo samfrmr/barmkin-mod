@@ -38,7 +38,7 @@ import { neutralizeDescription, parseMcpServerName, isAllowedServer } from './li
 import { parseSemgrepJson, formatFindingsContext, worstSeverity, buildSemgrepCandidates } from './lib/sast'
 import { extractResultText, appendContext, withholdResult } from './lib/tool-result'
 import { meetsMinimumVersion, MIN_CLAUDE_CODE_VERSION } from './lib/version'
-import { appendAndTrim, createSerialQueue, type AuditEntry } from './lib/audit'
+import { appendAndTrim, auditLogPath, createSerialQueue, type AuditEntry } from './lib/audit'
 import { scrubAndRedactContent } from './lib/session-append'
 import { checkPosture } from './lib/posture'
 
@@ -192,8 +192,8 @@ async function callJevSystemOne(
 }
 
 // ---------------------------------------------------------------------------
-// Durable audit log (R12): an append-only JSONL file of every notable guard
-// decision this session made, outside $.state (which `lastVerdict` already
+// Durable audit log (R12): an append-only JSONL file per session of every
+// notable guard decision this session made, outside $.state (which `lastVerdict` already
 // showed only keeps the single most recent verdict -- F11). Best-effort and
 // never a gate: a write failure here never denies or delays a tool call: the
 // log is a record of decisions already made elsewhere, not a decision point
@@ -201,20 +201,23 @@ async function callJevSystemOne(
 // await it: the write is queued behind any earlier one and runs off the
 // calling hook's budget, and it's skipped entirely until session.start's
 // home-directory probe has finished, so no guard ever waits on that probe.
+// One file per session, so concurrent Claude Code sessions never
+// read-modify-write the same file and drop each other's rows.
 // ---------------------------------------------------------------------------
 
 const enqueueAuditWrite = createSerialQueue()
 
 function appendAudit($: any, entry: Omit<AuditEntry, 'ts' | 'session'>): void {
   if (!probedHomeDir) return
-  const path = probedHomeDir + '/.claude/barmkin-mod-audit.jsonl'
+  const home = probedHomeDir
   const row = { ts: Date.now(), ...entry }
-  void enqueueAuditWrite(() => writeAuditRow($, path, row))
+  void enqueueAuditWrite(() => writeAuditRow($, home, row))
 }
 
-async function writeAuditRow($: any, path: string, row: Omit<AuditEntry, 'session'>): Promise<void> {
+async function writeAuditRow($: any, home: string, row: Omit<AuditEntry, 'session'>): Promise<void> {
   const session = await $.session.id()
   const full: AuditEntry = { ...row, session }
+  const path = auditLogPath(home, session)
   let existing = ''
   try {
     existing = await $.fs.read(path)
@@ -261,6 +264,7 @@ async function screenContent(
   label: string,
   toolUseId: string | undefined,
 ): Promise<ScreenOutcome> {
+  text = scrubInvisible(text).text
   const jev = getJevOptions(pluginOptions)
   const now = Date.now()
   const breakerUntil = await read($, breakerOpenUntil)

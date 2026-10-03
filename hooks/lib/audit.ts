@@ -1,5 +1,5 @@
-// Pure helpers for the durable audit log (R12): formats one row and bounds
-// the file's growth. No `$` use here; register.ts does the actual
+// Pure helpers for the durable audit log (R12): names each session's file
+// and bounds its growth. No `$` use here; register.ts does the actual
 // $.fs.read/write.
 
 export interface AuditEntry {
@@ -15,8 +15,14 @@ export interface AuditEntry {
   reason: string
 }
 
-export function formatAuditLine(entry: AuditEntry): string {
-  return JSON.stringify(entry) + '\n'
+// Each session gets its own file, so two Claude Code sessions running at
+// once never read-modify-write the same file (which would drop a row; the
+// in-process serial queue below can't see another process's writes). The
+// session id is reduced to a safe filename so it can never name a path
+// outside ~/.claude.
+export function auditLogPath(home: string, session: string): string {
+  const safe = session.replace(/[^A-Za-z0-9_-]/g, '_') || 'unknown'
+  return home + '/.claude/barmkin-mod-audit-' + safe + '.jsonl'
 }
 
 // Keeps the audit log from growing without bound on a long-lived install:

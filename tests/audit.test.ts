@@ -1,13 +1,7 @@
 import { expect, test } from 'claude-code/testing'
-import { formatAuditLine, appendAndTrim, createSerialQueue, type AuditEntry } from '../hooks/lib/audit'
+import { appendAndTrim, auditLogPath, createSerialQueue, type AuditEntry } from '../hooks/lib/audit'
 
 const sampleEntry: AuditEntry = { ts: 1700000000000, session: 'abc123', event: 'screen', tool: 'fetch:WebFetch', decision: 'escalate', reason: 'scored 0.60 on the injection question' }
-
-test('formats one row as a single JSON line', () => {
-  const line = formatAuditLine(sampleEntry)
-  expect(line.endsWith('\n')).toBe(true)
-  expect(JSON.parse(line.trim())).toEqual(sampleEntry)
-})
 
 test('appends a new row to an empty log', () => {
   const result = appendAndTrim('', sampleEntry, 100)
@@ -17,7 +11,7 @@ test('appends a new row to an empty log', () => {
 })
 
 test('appends a new row after existing rows', () => {
-  const existing = formatAuditLine({ ...sampleEntry, event: 'first' })
+  const existing = JSON.stringify({ ...sampleEntry, event: 'first' }) + '\n'
   const result = appendAndTrim(existing, { ...sampleEntry, event: 'second' }, 100)
   const lines = result.trim().split('\n')
   expect(lines.length).toBe(2)
@@ -35,17 +29,22 @@ test('trims to the last maxLines rows, keeping the newest', () => {
 })
 
 test('drops an unparseable existing line rather than corrupting the file', () => {
-  const corrupted = 'not valid json\n' + formatAuditLine({ ...sampleEntry, event: 'ok' })
+  const corrupted = 'not valid json\n' + JSON.stringify({ ...sampleEntry, event: 'ok' }) + '\n'
   const result = appendAndTrim(corrupted, { ...sampleEntry, event: 'new' }, 100)
   const lines = result.trim().split('\n').map((l) => JSON.parse(l).event)
   expect(lines).toEqual(['ok', 'new'])
 })
 
-test('never includes a secret value field: only categories/counts belong in reason', () => {
-  const entry: AuditEntry = { ts: 1, session: 's', event: 'screen', tool: 'read:/etc/passwd', decision: 'escalate', reason: 'scored 0.70 on the credentials question' }
-  const line = formatAuditLine(entry)
-  expect(line).not.toContain('AKIA')
-  expect(line).not.toContain('sk-')
+test('concurrent sessions write to distinct audit files', () => {
+  const a = auditLogPath('/home/u', '1f0c2b9e-aaaa-4bbb-8ccc-000000000001')
+  const b = auditLogPath('/home/u', '1f0c2b9e-aaaa-4bbb-8ccc-000000000002')
+  expect(a).toBe('/home/u/.claude/barmkin-mod-audit-1f0c2b9e-aaaa-4bbb-8ccc-000000000001.jsonl')
+  expect(a).not.toBe(b)
+})
+
+test('a session id can never name a path outside ~/.claude', () => {
+  expect(auditLogPath('/home/u', '../../etc/passwd')).toBe('/home/u/.claude/barmkin-mod-audit-______etc_passwd.jsonl')
+  expect(auditLogPath('/home/u', '')).toBe('/home/u/.claude/barmkin-mod-audit-unknown.jsonl')
 })
 
 test('serialized overlapping read-modify-write appends keep every row', async () => {
@@ -59,18 +58,6 @@ test('serialized overlapping read-modify-write appends keep every row', async ()
   const enqueue = createSerialQueue()
   await Promise.all([enqueue(append('first')), enqueue(append('second'))])
   expect(file.trim().split('\n').map((line) => JSON.parse(line).event)).toEqual(['first', 'second'])
-})
-
-test('unserialized overlapping read-modify-write appends lose a row', async () => {
-  let file = ''
-  const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
-  const append = async (event: string) => {
-    const existing = file
-    await tick()
-    file = appendAndTrim(existing, { ...sampleEntry, event }, 100)
-  }
-  await Promise.all([append('first'), append('second')])
-  expect(file.trim().split('\n').length).toBe(1)
 })
 
 test('a failing task does not stop later queued tasks', async () => {
