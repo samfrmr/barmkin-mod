@@ -56,7 +56,7 @@ export const REDACTION_RULES: RedactionRule[] = [
   {
     name: 'generic-key-env-assignment',
     pattern:
-      /\b[A-Z0-9_]*(?:(?<=_)KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|_PAT(?![A-Z]))[A-Z0-9_]*[ \t]*=[ \t]*(?:(['"])(?!\$|\[REDACTED:)(?![^'"\s]*\$\{)(?=[^'"\s]*\d)[^'"\s]{16,}\1(?![ \t]*[-+*\/%.[(])|(?!\$)(?=[^\s'"`()[\]{}.;,]*\d)[^\s'"`()[\]{}.;,]{16,}(?![^\s;,'"`]))/g,
+      /\b[A-Z0-9_]{0,64}(?:(?<=_)KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|_PAT(?![A-Z]))[A-Z0-9_]{0,64}[ \t]*=[ \t]*(?:(['"])(?!\$|\[REDACTED:)(?![^'"\s]*\$\{)(?=[^'"\s]*\d)[^'"\s]{16,}\1(?![ \t]*[-+*\/%.[(])|(?!\$)(?=[^\s'"`()[\]{}.;,]*\d)[^\s'"`()[\]{}.;,]{16,}(?![^\s;,'"`]))/g,
     category: 'env-key',
     example: 'AWS_SECRET_KEY=abcdef0123456789',
   },

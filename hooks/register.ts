@@ -189,16 +189,17 @@ async function callJevSystemOne(
 // Shared by every R7 call site (the outermost redaction pass, tool.describe,
 // and session.receive): taints the session when a scrub stripped more than
 // INVISIBLE_CHAR_TAINT_THRESHOLD characters.
+// The first reason recorded for a session wins, so a later taint never
+// replaces the evidence the deny message and the verdict already show.
+async function markTainted($: any, reason: string): Promise<void> {
+  await update($, tainted, () => true)
+  await update($, taintReason, (current: string | null) => current ?? reason)
+}
+
 async function taintForScrub($: any, hiddenCount: number, source: string): Promise<void> {
   if (hiddenCount <= INVISIBLE_CHAR_TAINT_THRESHOLD) return
   try {
-    if (await read($, tainted)) return
-    await update($, tainted, () => true)
-    await update(
-      $,
-      taintReason,
-      () => 'stripped ' + hiddenCount + ' invisible character(s) from ' + source,
-    )
+    await markTainted($, 'stripped ' + hiddenCount + ' invisible character(s) from ' + source)
   } catch {
     return
   }
@@ -260,10 +261,7 @@ async function screenContent(
     at: now,
   }))
 
-  if (composed.tainted) {
-    await update($, tainted, () => true)
-    await update($, taintReason, () => composed.reason)
-  }
+  if (composed.tainted) await markTainted($, composed.reason)
 
   if (toolUseId) {
     try {
@@ -381,7 +379,7 @@ async function mcpGuardHook($: any, e: any, next: any) {
 
   const text = extractResultText(result)
   if (!text) return result
-  const verdict = await screenContent($, text, 'mcp', e.tool_use_id)
+  const verdict = await screenContent($, text, 'mcp:' + (serverName ?? e.tool), e.tool_use_id)
   if (verdict.decision === 'deny') {
     return withholdResult(result, 'barmkin-mod: withheld this MCP result (' + verdict.reason + '). Ask the user before retrying.')
   }
@@ -443,7 +441,7 @@ async function readTaintHook($: any, e: any, next: any) {
 
   const text = extractResultText(result)
   if (!text) return result
-  const verdict = await screenContent($, text, 'read:outside-cwd', e.tool_use_id)
+  const verdict = await screenContent($, text, 'read:' + e.file_path, e.tool_use_id)
   if (verdict.decision === 'deny') {
     return withholdResult(result, "barmkin-mod: withheld this file's content (" + verdict.reason + '). Ask the user before retrying.')
   }
