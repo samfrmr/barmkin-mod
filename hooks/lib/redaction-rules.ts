@@ -56,17 +56,14 @@ export const REDACTION_RULES: RedactionRule[] = [
   // ending in _FILE, _PATH, _DIR or _URL is left alone, so
   // DB_PASSWORD_FILE=/run/secrets/... stays unredacted. The value is not
   // inspected for a leading slash, since a base64 secret can start with one.
-  // A value under a TOKEN/PASSWORD/PASSWD/CREDENTIAL(S)/_PAT name needs either a
-  // digit (as for every name) or 19+ characters with no underscore or hyphen.
-  // Measured on the corpus: the letters-only must-catch samples are
-  // correcthorsebatterystaple (25) and supersecretpassword (19); the unbroken
-  // non-secret values under those names are shorter or carry a separator
-  // (generate_csrf_token(), cache_v2_large_entries, session.get_credentials()).
-  // An identifier such as some_long_identifier is not redacted.
+  // The value needs a digit, for every name. A letters-only secret assigned to
+  // TOKEN/PASSWORD/PASSWD/CREDENTIAL(S)/_PAT is a known gap: a 19+ letter run
+  // with no separator is indistinguishable from a code identifier
+  // (const token = refreshedAccessTokenValue;), so it is not redacted.
   {
     name: 'generic-key-env-assignment',
     pattern:
-      /\b(?=(?<name>[A-Z0-9_]*(?:(?<=_)KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|_PAT(?![A-Z]))[A-Z0-9_]*))\k<name>(?<!_FILE|_PATH|_DIR|_URL)[ \t]*=[ \t]*(?:(?<q>['"])(?!\$|\[REDACTED:)(?![^'"\s]*\$\{)(?:(?<=[A-Z0-9_]*(?:TOKEN|PASSWORD|PASSWD|CREDENTIALS?|_PAT(?![A-Z]))[A-Z0-9_]*[ \t]*=[ \t]*['"])(?=[^'"\s_-]{19})[^'"\s_-]+|(?=[^'"\s]*\d)[^'"\s]{16,})\k<q>(?![ \t]*[-+*\/%.[(])|(?!\$)(?:(?<=[A-Z0-9_]*(?:TOKEN|PASSWORD|PASSWD|CREDENTIALS?|_PAT(?![A-Z]))[A-Z0-9_]*[ \t]*=[ \t]*)(?=[^\s'"`()[\]{}.;,_-]{19})[^\s'"`()[\]{}.;,_-]+|(?=[^\s'"`()[\]{}.;,]*\d)[^\s'"`()[\]{}.;,]{16,})(?![^\s;,'"`]))/gi,
+      /\b(?=(?<name>[A-Z0-9_]*(?:(?<=_)KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|_PAT(?![A-Z]))[A-Z0-9_]*))\k<name>(?<!_FILE|_PATH|_DIR|_URL)[ \t]*=[ \t]*(?:(?<q>['"])(?!\$|\[REDACTED:)(?![^'"\s]*\$\{)(?=[^'"\s]*\d)[^'"\s]{16,}\k<q>(?![ \t]*[-+*\/%.[(])|(?!\$)(?=[^\s'"`()[\]{}.;,]*\d)[^\s'"`()[\]{}.;,]{16,}(?![^\s;,'"`]))/gi,
     category: 'env-key',
     example: 'AWS_SECRET_KEY=abcdef0123456789',
   },
