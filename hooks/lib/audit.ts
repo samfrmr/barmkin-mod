@@ -1,6 +1,7 @@
-// Pure helpers for the durable audit log (R12): names each session's file
-// and bounds their growth. No `$` use here; register.ts does the actual
-// $.fs.read/write and pruning.
+// Durable audit log (R12): names each session's file, bounds its rows, and
+// writes rows one at a time through one serial queue. Takes the host's `$`
+// and a home-directory resolver, so the real write path can be exercised
+// against a fake `$` (register.ts passes the live one and its cached probe).
 
 export interface AuditEntry {
   ts: number
@@ -25,21 +26,13 @@ export function auditLogPath(home: string, session: string): string {
   return home + '/.claude/barmkin-mod-audit-' + safe + '.jsonl'
 }
 
-const AUDIT_FILE_NAME = /^barmkin-mod-audit-[A-Za-z0-9_-]+\.jsonl$/
+const MAX_AUDIT_LINES = 2000
 
-// Bounds how many per-session files a long-lived install keeps: given a
-// directory listing ordered newest-first, returns the audit files past the
-// newest `keep`. Anything that isn't one of this mod's audit files (by
-// exact name shape) is never returned, so it's never deleted.
-export function staleAuditFiles(namesNewestFirst: string[], keep: number): string[] {
-  return namesNewestFirst.filter((name) => AUDIT_FILE_NAME.test(name)).slice(keep)
-}
-
-// Keeps one session's audit file from growing without bound (staleAuditFiles
-// bounds how many files are kept): parses existing JSONL text, keeps at most the last `maxLines` rows (plus
-// the just-appended one), and re-serializes. A line that fails to parse
-// (truncated by a prior crash mid-write, hand-edited) is dropped rather
-// than kept or allowed to break the parse of every line after it.
+// Keeps one session's audit file from growing without bound: parses existing
+// JSONL text, keeps at most the last `maxLines` rows (plus the just-appended
+// one), and re-serializes. A line that fails to parse (truncated by a prior
+// crash mid-write, hand-edited) is dropped rather than kept or allowed to
+// break the parse of every line after it.
 export function appendAndTrim(existingJsonl: string, entry: AuditEntry, maxLines: number): string {
   const lines = existingJsonl.split('\n').filter((line) => line.trim().length > 0)
   const kept = lines.filter((line) => {
@@ -64,4 +57,34 @@ export function createSerialQueue(): (task: () => Promise<void>) => Promise<void
     tail = tail.then(task).catch(() => {})
     return tail
   }
+}
+
+const enqueueAuditRow = createSerialQueue()
+
+export function recordAudit(
+  $: any,
+  resolveHome: () => Promise<string>,
+  entry: Omit<AuditEntry, 'ts' | 'session'>,
+): Promise<void> {
+  const row = { ts: Date.now(), ...entry }
+  return enqueueAuditRow(() => writeAuditRow($, resolveHome, row))
+}
+
+async function writeAuditRow(
+  $: any,
+  resolveHome: () => Promise<string>,
+  row: Omit<AuditEntry, 'session'>,
+): Promise<void> {
+  const home = await resolveHome()
+  if (!home) return
+  const session = await $.session.id()
+  const path = auditLogPath(home, session)
+  let existing = ''
+  try {
+    existing = await $.fs.read(path)
+  } catch {
+    const probe = await $.process.run(['sh', '-c', 'test -e "$1"', 'sh', path], { timeoutMs: 5000 })
+    if (probe.exitCode !== 1) return
+  }
+  await $.fs.write(path, appendAndTrim(existing, { ...row, session }, MAX_AUDIT_LINES))
 }

@@ -8,10 +8,12 @@
 // them, so seating is checked against the policy-source settings alone.
 // The other checks (sandbox, permissions, disableSkillShellExecution) apply
 // from whatever source set them, so those are checked against the merged
-// settings `$.settings.read()` already returns.
+// settings `$.settings.read()` already returns. A null side means that read
+// failed, and the checks it feeds are reported as unverified rather than
+// silently passing or dropped.
 export interface PostureSettings {
-  merged: Record<string, unknown>
-  policy: Record<string, unknown>
+  merged: Record<string, unknown> | null
+  policy: Record<string, unknown> | null
 }
 
 function pluginIdName(id: string): string {
@@ -21,13 +23,15 @@ function pluginIdName(id: string): string {
 export function checkPosture(settings: PostureSettings, pluginName: string, mcpAllowlist: readonly string[]): string[] {
   const warnings: string[] = []
 
-  const rawPrepend = settings.policy.prependPlugins
+  const rawPrepend = settings.policy?.prependPlugins
   const prependPlugins = Array.isArray(rawPrepend) ? rawPrepend.filter((v): v is string => typeof v === 'string') : null
 
   const ourIndex = prependPlugins ? prependPlugins.findIndex((id) => pluginIdName(id) === pluginName) : -1
   const secDefaultIndex = prependPlugins ? prependPlugins.findIndex((id) => pluginIdName(id) === 'sec-default') : -1
 
-  if (prependPlugins === null || ourIndex === -1) {
+  if (settings.policy === null) {
+    warnings.push(pluginName + ' seating in managed prependPlugins is unverified: the policy settings read failed.')
+  } else if (prependPlugins === null || ourIndex === -1) {
     warnings.push(
       pluginName +
         ' is not seated in managed prependPlugins: skill text, CLAUDE.md and other prompt-assembly content stay out of its reach (README "Seat requirements").',
@@ -40,26 +44,33 @@ export function checkPosture(settings: PostureSettings, pluginName: string, mcpA
     )
   }
 
-  const permissions = settings.merged.permissions
-  const defaultMode =
-    permissions && typeof permissions === 'object' && !Array.isArray(permissions)
-      ? (permissions as Record<string, unknown>).defaultMode
-      : undefined
-  if (defaultMode === 'bypassPermissions') {
-    warnings.push('permissions.defaultMode is "bypassPermissions": every tool.check-mediated prompt is skipped.')
-  }
-
-  const sandbox = settings.merged.sandbox
-  const sandboxEnabled =
-    sandbox && typeof sandbox === 'object' && !Array.isArray(sandbox) ? (sandbox as Record<string, unknown>).enabled : undefined
-  if (sandboxEnabled !== true) {
-    warnings.push('the Bash sandbox is off (sandbox.enabled is not true): no OS-level egress floor backs this mod\'s taint-gated denies.')
-  }
-
-  if (settings.merged.disableSkillShellExecution !== true) {
+  if (settings.merged === null) {
     warnings.push(
-      'disableSkillShellExecution is unset: a skill\'s inline shell (`!`command``) still bypasses every tool.call-based guard this mod has.',
+      'the sandbox, permissions.defaultMode and disableSkillShellExecution checks are unverified: the settings read failed.',
     )
+  } else {
+    const merged = settings.merged
+    const permissions = merged.permissions
+    const defaultMode =
+      permissions && typeof permissions === 'object' && !Array.isArray(permissions)
+        ? (permissions as Record<string, unknown>).defaultMode
+        : undefined
+    if (defaultMode === 'bypassPermissions') {
+      warnings.push('permissions.defaultMode is "bypassPermissions": every tool.check-mediated prompt is skipped.')
+    }
+
+    const sandbox = merged.sandbox
+    const sandboxEnabled =
+      sandbox && typeof sandbox === 'object' && !Array.isArray(sandbox) ? (sandbox as Record<string, unknown>).enabled : undefined
+    if (sandboxEnabled !== true) {
+      warnings.push('the Bash sandbox is off (sandbox.enabled is not true): no OS-level egress floor backs this mod\'s taint-gated denies.')
+    }
+
+    if (merged.disableSkillShellExecution !== true) {
+      warnings.push(
+        'disableSkillShellExecution is unset: a skill\'s inline shell (`!`command``) still bypasses every tool.call-based guard this mod has.',
+      )
+    }
   }
 
   if (mcpAllowlist.length === 0) {

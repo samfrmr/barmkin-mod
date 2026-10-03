@@ -38,8 +38,8 @@ import { neutralizeDescription, parseMcpServerName, isAllowedServer } from './li
 import { parseSemgrepJson, formatFindingsContext, worstSeverity, buildSemgrepCandidates } from './lib/sast'
 import { extractResultText, appendContext, withholdResult } from './lib/tool-result'
 import { meetsMinimumVersion, MIN_CLAUDE_CODE_VERSION } from './lib/version'
-import { appendAndTrim, auditLogPath, createSerialQueue, staleAuditFiles, type AuditEntry } from './lib/audit'
-import { scrubAndRedactContent } from './lib/session-append'
+import { recordAudit, type AuditEntry } from './lib/audit'
+import { scrubAndRedactMessageContent } from './lib/session-append'
 import { checkPosture } from './lib/posture'
 
 // ---------------------------------------------------------------------------
@@ -94,12 +94,9 @@ const JEV_TIMEOUT_MS = 700
 // piece of content taints the session: a payload smuggled one invisible code
 // point per byte runs well past this.
 const INVISIBLE_CHAR_TAINT_THRESHOLD = 32
-// Caps the audit log file at roughly this many rows (~200-300 KB of JSONL)
-// so a long-lived install never grows it without bound.
-const MAX_AUDIT_LINES = 2000
-// Keeps at most this many per-session audit files (the most recently
-// written), so the total stays bounded at ~MAX_AUDIT_FILES * MAX_AUDIT_LINES rows.
-const MAX_AUDIT_FILES = 50
+// Session.start deletes per-session audit files not written within this many
+// days, so a long-lived install's ~/.claude doesn't fill with one per session.
+const AUDIT_RETENTION_DAYS = 30
 // This plugin's own manifest name, as it appears before the `@marketplace`
 // suffix in a managed prependPlugins entry (R16's posture check).
 const PLUGIN_NAME = 'barmkin-mod'
@@ -208,42 +205,21 @@ async function callJevSystemOne(
 // read-modify-write the same file and drop each other's rows.
 // ---------------------------------------------------------------------------
 
-const enqueueAuditWrite = createSerialQueue()
-
 function appendAudit($: any, entry: Omit<AuditEntry, 'ts' | 'session'>): void {
-  const row = { ts: Date.now(), ...entry }
-  void enqueueAuditWrite(() => writeAuditRow($, row))
+  void recordAudit($, () => resolveHomeDir($), entry)
 }
 
-async function writeAuditRow($: any, row: Omit<AuditEntry, 'session'>): Promise<void> {
-  const home = await resolveHomeDir($)
-  if (!home) return
-  const session = await $.session.id()
-  const full: AuditEntry = { ...row, session }
-  const path = auditLogPath(home, session)
-  let existing = ''
-  try {
-    existing = await $.fs.read(path)
-  } catch {
-    const probe = await $.process.run(['sh', '-c', 'test -e "$1"', 'sh', path], { timeoutMs: 5000 })
-    if (probe.exitCode !== 1) return
-  }
-  await $.fs.write(path, appendAndTrim(existing, full, MAX_AUDIT_LINES))
-}
-
-// Runs once per session.start, never awaited by it: deletes all but the
-// MAX_AUDIT_FILES most recently written per-session audit files. Best-effort
-// like every other audit write; a failure just leaves the files for next time.
+// Runs once per session.start, never awaited by it: deletes per-session audit
+// files not written within AUDIT_RETENTION_DAYS. Best-effort like every other
+// audit write; a failure just leaves the files for next time.
 async function pruneAuditLogs($: any): Promise<void> {
   const home = await resolveHomeDir($)
   if (!home) return
-  const dir = home + '/.claude'
   try {
-    const listing = await $.process.run(['sh', '-c', 'cd "$1" && ls -1t', 'sh', dir], { timeoutMs: 5000 })
-    if (listing.exitCode !== 0) return
-    const stale = staleAuditFiles(listing.stdout.split('\n'), MAX_AUDIT_FILES)
-    if (stale.length === 0) return
-    await $.process.run(['rm', '-f', '--', ...stale.map((name) => dir + '/' + name)], { timeoutMs: 5000 })
+    await $.process.run(
+      ['find', home + '/.claude', '-maxdepth', '1', '-name', 'barmkin-mod-audit-*.jsonl', '-mtime', '+' + AUDIT_RETENTION_DAYS, '-delete'],
+      { timeoutMs: 5000 },
+    )
   } catch {
     // best-effort only
   }
@@ -364,13 +340,21 @@ async function sessionStartHook($: any, e: any, next: any) {
     // $.session.version() unavailable on this build; nothing to warn about
   }
 
+  let merged: Record<string, unknown> | null = null
   try {
-    const [merged, policy] = await Promise.all([$.settings.read(), $.settings.read({ source: 'policy' })])
-    const mcpAllowlist = parseAllowlist(pluginOptions.mcp_server_allowlist)
-    const postureWarnings = checkPosture({ merged, policy }, PLUGIN_NAME, mcpAllowlist)
-    for (const warning of postureWarnings) statusLines.push('barmkin-mod posture: ' + warning)
+    merged = await $.settings.read()
   } catch {
-    // $.settings.read() unavailable or refused on this build; nothing to warn about
+    // $.settings.read() unavailable or refused on this build; checkPosture reports it as unverified
+  }
+  let policy: Record<string, unknown> | null = null
+  try {
+    policy = await $.settings.read({ source: 'policy' })
+  } catch {
+    // the policy source refused or unavailable; checkPosture reports seating as unverified
+  }
+  const mcpAllowlist = parseAllowlist(pluginOptions.mcp_server_allowlist)
+  for (const warning of checkPosture({ merged, policy }, PLUGIN_NAME, mcpAllowlist)) {
+    statusLines.push('barmkin-mod posture: ' + warning)
   }
 
   if (statusLines.length > 0) {
@@ -764,10 +748,8 @@ async function agentSpawnCatch($: any, e: any, next: any) {
 // ---------------------------------------------------------------------------
 
 async function sessionAppendRedactionHook($: any, e: any, next: any) {
-  const content = e.message?.content
-  if (!Array.isArray(content)) return next(e)
-
-  const result = scrubAndRedactContent(content, REDACTION_RULES, redactionCounters)
+  const result = scrubAndRedactMessageContent(e.message?.content, REDACTION_RULES, redactionCounters)
+  if (!result) return next(e)
   await taintForScrub($, result.hiddenCount, 'a stored message (door:' + e.door + ')')
 
   if (!result.changed) return next(e)

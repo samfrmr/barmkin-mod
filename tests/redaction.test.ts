@@ -112,6 +112,14 @@ test('never redacts code expressions assigned to a *_KEY constant', () => {
   expect(text).toBe(source)
 })
 
+test('redacts a secret whose name has no underscore before the keyword or ends in a digit', () => {
+  const value = 'xK9mP2qL7vN4wR8tY3uI'
+  const source = [`JWTSECRET=${value}`, `API_KEY2=${value}`, `SECRET2=${value}`].join('\n')
+  const { text, redactedCount } = redactText(source, REDACTION_RULES, {})
+  expect(redactedCount).toBe(3)
+  expect(text).not.toContain(value)
+})
+
 test('never redacts a path-valued variable whose name only contains a keyword as a substring', () => {
   const source = [
     'export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu',

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { scrubAndRedactBlock, scrubAndRedactContent } from '../hooks/lib/session-append'
+import { scrubAndRedactBlock, scrubAndRedactContent, scrubAndRedactMessageContent } from '../hooks/lib/session-append'
 import { REDACTION_RULES } from '../hooks/lib/redaction-rules'
 
 test('redacts a secret inside a text block', () => {
@@ -81,4 +81,15 @@ test('scrubAndRedactContent reports no change for an all-clean content array', (
   const result = scrubAndRedactContent(content, REDACTION_RULES, {})
   expect(result.changed).toBe(false)
   expect(result.hiddenCount).toBe(0)
+})
+
+test('redacts a plain-string message and keeps it a string', () => {
+  const result = scrubAndRedactMessageContent('my key AKIAIOSFODNN7EXAMPLE', REDACTION_RULES, {})
+  expect(result?.changed).toBe(true)
+  expect(result?.content).toBe('my key [REDACTED:aws-key#1]')
+})
+
+test('returns null for message content that is neither a string nor a block array', () => {
+  expect(scrubAndRedactMessageContent(undefined, REDACTION_RULES, {})).toBeNull()
+  expect(scrubAndRedactMessageContent({ type: 'text' }, REDACTION_RULES, {})).toBeNull()
 })

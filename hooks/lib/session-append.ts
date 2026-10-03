@@ -72,3 +72,20 @@ export function scrubAndRedactContent(
   })
   return { content: result, changed, hiddenCount }
 }
+
+export function scrubAndRedactMessageContent(
+  content: unknown,
+  rules: RedactionRule[],
+  counters: Record<string, number>,
+): { content: unknown; changed: boolean; hiddenCount: number } | null {
+  if (typeof content === 'string') {
+    const res = scrubAndRedactBlock({ type: 'text', text: content }, rules, counters)
+    return {
+      content: res.changed ? (res.block as { text: string }).text : content,
+      changed: res.changed,
+      hiddenCount: res.hiddenCount,
+    }
+  }
+  if (!Array.isArray(content)) return null
+  return scrubAndRedactContent(content, rules, counters)
+}

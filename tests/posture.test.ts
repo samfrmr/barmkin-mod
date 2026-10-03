@@ -75,3 +75,17 @@ test('a fully hardened posture produces no warnings', () => {
   const warnings = checkPosture(GOOD_SEAT, 'barmkin-mod', ['github'])
   expect(warnings).toEqual([])
 })
+
+test('a failed policy read reports seating as unverified and still runs the merged checks', () => {
+  const warnings = checkPosture({ merged: {}, policy: null }, 'barmkin-mod', ['github'])
+  expect(warnings.some((w) => w.includes('seating') && w.includes('unverified'))).toBe(true)
+  expect(warnings.some((w) => w.includes('not seated'))).toBe(false)
+  expect(warnings.some((w) => w.includes('the Bash sandbox is off'))).toBe(true)
+})
+
+test('a failed merged read reports its checks as unverified and still checks seating', () => {
+  const warnings = checkPosture({ merged: null, policy: { prependPlugins: ['sec-default@builtin', 'barmkin-mod@acme'] } }, 'barmkin-mod', ['github'])
+  expect(warnings.some((w) => w.includes('unverified'))).toBe(true)
+  expect(warnings.some((w) => w.includes('the Bash sandbox is off'))).toBe(false)
+  expect(warnings.some((w) => w.includes('sec-default is seated ahead'))).toBe(true)
+})
