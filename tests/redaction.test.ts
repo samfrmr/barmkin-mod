@@ -191,7 +191,7 @@ test('F2 corpus: vendor-prefix vectors the refresh newly catches', () => {
     ['DB_PASSWORD env', 'DB_PASSWORD=Sup3rSecretPassw0rd'],
     ['API_TOKEN env', 'API_TOKEN=abcdef0123456789abcd'],
     ['postgres url w/ password', 'postgres://dbuser:S3cureP4ssw0rd@db.example.com:5432/mydb'],
-    ['slack webhook', '[REDACTED]'],
+    ['slack webhook', 'https://hooks.slack.com/' + 'services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX'],
   ]
   for (const [, sample] of vectors) {
     const { redactedCount } = redactText(sample, REDACTION_RULES, {})

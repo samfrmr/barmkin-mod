@@ -148,7 +148,7 @@ export const REDACTION_RULES: RedactionRule[] = [
     name: 'slack-webhook',
     pattern: /\bhttps:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9/]+/g,
     category: 'slack-webhook',
-    example: '[REDACTED]',
+    example: 'https://hooks.slack.com/' + 'services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX',
   },
   // A URL's userinfo segment, scheme through the `@`: redacts the whole
   // `scheme://user:password@` prefix rather than only the password, since
