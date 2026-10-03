@@ -304,6 +304,12 @@ test('helper-level: detection on a zero-width-split AKIA key holds only after th
   expect(redactText(scrubInvisible(split).text, REDACTION_RULES, {}).text).toContain('[REDACTED:aws-key#')
 })
 
+test('helper-level: an outbound text with joiners and no secret is left unredacted, so the original is forwarded', () => {
+  const typed = 'family 👨‍👩‍👧 and क्‍ष and ‌fine'
+  expect(redactText(scrubInvisible(typed).text, REDACTION_RULES, {}).redactedCount).toBe(0)
+  expect(containsAnySecret(scrubInvisible(typed).text, REDACTION_RULES)).toBe(false)
+})
+
 test('leaves a letters-only password-class value unredacted (documented gap)', () => {
   for (const line of [
     'DB_PASSWORD=correcthorsebatterystaple',

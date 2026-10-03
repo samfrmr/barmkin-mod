@@ -100,6 +100,13 @@ test('redacts an AWS key split by a zero-width character in a user-typed prompt'
   expect(answer.text).not.toContain('​')
 })
 
+test('a prompt with joiners and no secret reaches the model byte-identical', async ($, on) => {
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  const typed = 'family 👨‍👩‍👧 and क्‍ष and ‌fine'
+  const answer = await $.prompt.submit({ text: typed })
+  expect(answer.text).toBe(typed)
+})
+
 test('a prompt with nothing to redact passes through unchanged', async ($, on) => {
   on('prompt.submit', ($, e) => ({ text: e.text }))
   const answer = await $.prompt.submit({ text: 'please run the test suite' })

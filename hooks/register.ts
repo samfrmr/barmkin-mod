@@ -372,9 +372,10 @@ async function promptSubmitHook($: any, e: any, next: any) {
   if (exceedsScanLimit(e.text)) {
     return { deny: 'barmkin-mod: your message is longer than the 16 KiB scan limit, so it was withheld' }
   }
+  // Detection runs on the scrubbed view; the original text is forwarded unless a secret is redacted.
   const { text, redactedCount } = redactText(scrubInvisible(e.text).text, REDACTION_RULES, redactionCounters)
-  if (redactedCount > 0) $.ui.log('barmkin-mod: redacted ' + redactedCount + ' likely secret(s) from your message before sending it')
-  if (text === e.text) return next(e)
+  if (redactedCount === 0) return next(e)
+  $.ui.log('barmkin-mod: redacted ' + redactedCount + ' likely secret(s) from your message before sending it')
   return next({ ...e, text })
 }
 
@@ -722,6 +723,7 @@ async function sessionSendHook($: any, e: any, next: any) {
   if (exceedsScanLimit(e.text)) {
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it is longer than the 16 KiB scan limit' }
   }
+  // Detection runs on the scrubbed view; the original text is delivered when no secret is found.
   if (containsAnySecret(scrubInvisible(e.text).text, REDACTION_RULES)) {
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it appears to contain a secret' }
   }
