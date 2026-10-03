@@ -541,7 +541,10 @@ async function redactionHook($: any, e: any, next: any) {
     return value
   }
   if ('result' in result) next_.result = redactValue(result.result)
+  const hiddenInResult = hiddenCount
+  hiddenCount = 0
   if (typeof result.text === 'string') next_.text = redactValue(result.text)
+  hiddenCount = Math.max(hiddenInResult, hiddenCount)
 
   if (Array.isArray(result.context)) {
     const redactedContext = result.context.map((c: unknown) => {
