@@ -155,7 +155,7 @@ async function callJevSystemOne(
   jev: JevOptions,
   rawText: string,
 ): Promise<SystemOneParseResult> {
-  const text = redactText(rawText, REDACTION_RULES).text.slice(0, 4000)
+  const text = redactInEitherView(rawText).text.slice(0, 4000)
   const body = buildSystemOneRequest(jev.model, { content: text }, JEV_QUESTIONS)
   const controller = new AbortController()
   const timer = $.clock.after(JEV_TIMEOUT_MS, () => controller.abort())
@@ -186,11 +186,6 @@ async function callJevSystemOne(
   }
 }
 
-// Shared by every scrubInvisible call site (the outermost redaction pass, tool.describe,
-// and session.receive): taints the session when a scrub stripped more than
-// INVISIBLE_CHAR_TAINT_THRESHOLD characters.
-// The first reason recorded for a session wins, so a later taint never
-// replaces the evidence the deny message and the verdict already show.
 // Detection runs on the original text and on its scrubbed view, so a zero-width
 // character neither hides a secret from the rules nor splits one into a match.
 function hasSecretInEitherView(text: string): boolean {
@@ -225,6 +220,11 @@ async function readTaint($: any): Promise<{ tainted: boolean; reason: string | n
   return { tainted: await read($, tainted), reason: await read($, taintReason) }
 }
 
+// Shared by every scrubInvisible call site (the outermost redaction pass, tool.describe,
+// and session.receive): taints the session when a scrub stripped more than
+// INVISIBLE_CHAR_TAINT_THRESHOLD characters.
+// The first reason recorded for a session wins, so a later taint never
+// replaces the evidence the deny message and the verdict already show.
 async function taintForScrub($: any, hiddenCount: number, source: string): Promise<void> {
   if (hiddenCount <= INVISIBLE_CHAR_TAINT_THRESHOLD) return
   try {
@@ -277,7 +277,7 @@ async function screenContent(
   let jevScores: ScoreSource | null = null
 
   if (canUseJev) {
-    const outcome = await callJevSystemOne($, jev, text)
+    const outcome = await callJevSystemOne($, jev, raw)
     if (outcome.ok) {
       jevScores = {
         model: outcome.model,
