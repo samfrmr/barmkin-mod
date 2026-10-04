@@ -195,6 +195,13 @@ test('an mcp tool call passes through when no allowlist is configured (audit-onl
   expect(out.deny).toBeUndefined()
 })
 
+test('session.receive withholds a peer message over the 16 KiB scan limit', async ($, on) => {
+  on('session.receive', ($, e) => ({ text: e.text }))
+  const answer = await $.session.receive({ origin: { kind: 'peer-send-message' }, text: 'x'.repeat(16 * 1024 + 1) })
+  expect(answer.consumed).toContain('16 KiB')
+  expect(answer.text).toBeUndefined()
+})
+
 test('session.receive passes an ordinary peer message through unchanged', async ($, on) => {
   on('session.receive', ($, e) => ({ text: e.text }))
   const answer = await $.session.receive({ origin: { kind: 'peer-send-message' }, text: 'Status update: build passed.' })
