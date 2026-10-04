@@ -20,6 +20,7 @@ import {
   redactText,
   redactInEitherView as redactInEitherViewLib,
   classifierInput,
+  WITHHELD_TEXT,
   containsAnySecret,
   containsSecretInEitherView,
   exceedsResultBudget,
@@ -390,6 +391,9 @@ async function promptSubmitHook($: any, e: any, next: any) {
   // Detection runs on the scrubbed view; the original text is forwarded unless a secret is redacted.
   const { text, redactedCount } = redactInEitherView(e.text)
   if (redactedCount === 0) return next(e)
+  if (text === WITHHELD_TEXT) {
+    return { drop: 'barmkin-mod: your message could not be fully scanned after redaction, so it was withheld' }
+  }
   $.ui.log('barmkin-mod: redacted ' + redactedCount + ' likely secret(s) from your message before sending it')
   return next({ ...e, text })
 }

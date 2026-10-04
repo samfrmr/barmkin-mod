@@ -97,10 +97,11 @@ export function containsSecretInEitherView(text: string, rules: RedactionRule[])
 }
 
 // The second pass runs on the first pass's output. A placeholder can be longer
-// than the match it replaces, so that output can pass the scan limit, and
-// redactText would then collapse it into an oversized placeholder. Any text that
-// grows past the limit is withheld with a stated reason instead, so it is never
-// passed through and never replaced by a placeholder that reads as content.
+// than the match it replaces, so the first pass's output can pass the scan limit,
+// and redactText would then collapse the second pass's input into an oversized
+// placeholder. Output that grows past the limit is withheld with a stated reason
+// instead. The second pass's own output can also grow, but it is never fed back
+// into redactText, so it is returned as is and not collapsed.
 export const WITHHELD_TEXT = 'barmkin-mod: withheld, the redacted text exceeds the 16 KiB scan limit'
 
 // The classifier must not score a withheld marker or an oversize placeholder as
