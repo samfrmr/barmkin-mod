@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { REDACTION_RULES } from '../hooks/lib/redaction-rules'
-import { redactText, containsAnySecret, containsSecretInEitherView, exceedsResultBudget } from '../hooks/lib/redaction'
+import { redactText, redactInEitherView, containsAnySecret, containsSecretInEitherView, exceedsResultBudget, exceedsScanLimit } from '../hooks/lib/redaction'
 import { scrubInvisible } from '../hooks/lib/scrub'
 
 test('redacts every example vector with a numbered placeholder', () => {
@@ -308,6 +308,16 @@ test('helper-level: a zero-width character before a key is seen on the original 
   const hidden = 'key1​AKIAIOSFODNN7EXAMPLE'
   expect(containsAnySecret(hidden, REDACTION_RULES)).toBe(true)
   expect(containsAnySecret(scrubInvisible(hidden).text, REDACTION_RULES)).toBe(false)
+})
+
+test('helper-level: a two-pass redaction whose placeholders push the text past the scan limit is withheld, not collapsed', () => {
+  const unit = 'SECRET=abcdefgh12345678;'
+  const input = unit.repeat(680)
+  expect(exceedsScanLimit(input)).toBe(false)
+  const out = redactInEitherView(input, REDACTION_RULES, { 'env-key': 100000 })
+  expect(out.text).not.toContain('[REDACTED:oversized')
+  expect(out.text).toContain('withheld')
+  expect(out.redactedCount).toBeGreaterThan(0)
 })
 
 test('helper-level: a secret hidden behind a zero-width character is refused on both views', () => {

@@ -95,10 +95,24 @@ export function containsSecretInEitherView(text: string, rules: RedactionRule[])
   return containsAnySecret(text, rules) || containsAnySecret(scrubInvisible(text).text, rules)
 }
 
-// Rules carry the "g" flag for redactText's replace loop, which makes
-// RegExp.prototype.test stateful (it advances lastIndex across calls on
-// the same object). Reset it before each test so this can be called
-// repeatedly without alternating false negatives.
+// The second pass runs on the first pass's output. A placeholder can be longer
+// than the match it replaces, so that output can pass the scan limit, and
+// redactText would then collapse it into an oversized placeholder. Any text that
+// grows past the limit is withheld with a stated reason instead, so it is never
+// passed through and never replaced by a placeholder that reads as content.
+export function redactInEitherView(
+  text: string,
+  rules: RedactionRule[],
+  counters: Record<string, number>,
+): { text: string; redactedCount: number } {
+  const first = redactText(text, rules, counters)
+  if (exceedsScanLimit(first.text)) {
+    return { text: 'barmkin-mod: withheld, the redacted text exceeds the 16 KiB scan limit', redactedCount: first.redactedCount + 1 }
+  }
+  const second = redactText(scrubInvisible(first.text).text, rules, counters)
+  return { text: second.text, redactedCount: first.redactedCount + second.redactedCount }
+}
+
 export function containsAnySecret(text: string, rules: RedactionRule[]): boolean {
   if (exceedsScanLimit(text)) return false
   return rules.some((rule) => {

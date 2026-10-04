@@ -16,7 +16,14 @@
 // static-analysis rules for the mods API.
 import { atom, read, update } from 'claude-code'
 import { REDACTION_RULES } from './lib/redaction-rules'
-import { redactText, containsAnySecret, containsSecretInEitherView, exceedsResultBudget, exceedsScanLimit } from './lib/redaction'
+import {
+  redactText,
+  redactInEitherView as redactInEitherViewLib,
+  containsAnySecret,
+  containsSecretInEitherView,
+  exceedsResultBudget,
+  exceedsScanLimit,
+} from './lib/redaction'
 import { scrubInvisible } from './lib/scrub'
 import {
   isOutwardEffectCommand,
@@ -187,9 +194,7 @@ async function callJevSystemOne(
 }
 
 function redactInEitherView(text: string): { text: string; redactedCount: number } {
-  const first = redactText(text, REDACTION_RULES, redactionCounters)
-  const second = redactText(scrubInvisible(first.text).text, REDACTION_RULES, redactionCounters)
-  return { text: second.text, redactedCount: first.redactedCount + second.redactedCount }
+  return redactInEitherViewLib(text, REDACTION_RULES, redactionCounters)
 }
 
 let taintWrites: Promise<unknown> = Promise.resolve()
