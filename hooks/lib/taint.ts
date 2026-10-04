@@ -139,14 +139,23 @@ const INJECTION_HEURISTIC_PATTERNS: RegExp[] = [
   /\bact as\b.{0,20}\bwithout (restrictions|limits)\b/i,
 ]
 
+// Hidden HTML comments: a common vehicle for hiding instructions in
+// rendered markdown (the Microsoft Claude Code Action incident hid a
+// payload this way). A comment alone is routine (issue/PR templates), so on
+// its own it scores below the default taintAt; alongside a phrase match it
+// adds weight like one more pattern.
+const HIDDEN_COMMENT_ALONE_SCORE = 0.3
+
 // Degraded-mode screen used when no Jev endpoint is configured, or the
 // breaker is open. Deliberately capped below the auto-deny threshold: a
 // pattern match alone only ever escalates (taints), it never denies on its
 // own, since it has no Noul-style calibration behind it.
 export function heuristicInjectionScore(text: string): number {
   const hits = INJECTION_HEURISTIC_PATTERNS.filter((re) => re.test(text)).length
-  if (hits === 0) return 0
-  return Math.min(0.5 + hits * 0.15, 0.8)
+  const open = text.indexOf('<!--')
+  const hasHiddenComment = open !== -1 && text.indexOf('-->', open + 4) !== -1
+  if (hits === 0) return hasHiddenComment ? HIDDEN_COMMENT_ALONE_SCORE : 0
+  return Math.min(0.5 + (hits + (hasHiddenComment ? 1 : 0)) * 0.15, 0.8)
 }
 
 export const UNTRUSTED_CONTENT_WARNING =

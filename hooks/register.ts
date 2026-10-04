@@ -16,7 +16,17 @@
 // static-analysis rules for the mods API.
 import { atom, read, update } from 'claude-code'
 import { REDACTION_RULES } from './lib/redaction-rules'
-import { redactText, containsAnySecret } from './lib/redaction'
+import {
+  redactText,
+  redactInEitherView as redactInEitherViewLib,
+  classifierInput,
+  WITHHELD_TEXT,
+  containsAnySecret,
+  containsSecretInEitherView,
+  exceedsResultBudget,
+  exceedsScanLimit,
+} from './lib/redaction'
+import { scrubInvisible } from './lib/scrub'
 import {
   isOutwardEffectCommand,
   composeScreen,
@@ -37,6 +47,7 @@ import { neutralizeDescription, parseMcpServerName, isAllowedServer } from './li
 import { parseSemgrepJson, formatFindingsContext, worstSeverity, buildSemgrepCandidates } from './lib/sast'
 import { extractResultText, appendContext, withholdResult } from './lib/tool-result'
 import { meetsMinimumVersion, MIN_CLAUDE_CODE_VERSION } from './lib/version'
+import { checkPosture } from './lib/posture'
 
 // ---------------------------------------------------------------------------
 // $.state atoms. Declared values must match types/index.d.ts, and plugin/key
@@ -84,6 +95,15 @@ let probedSemgrepCommand: string | null = null
 const BREAKER_FAILURE_THRESHOLD = 3
 const BREAKER_COOLDOWN_MS = 60_000
 const JEV_TIMEOUT_MS = 700
+// More than this many invisible-text carriers (scrubInvisible's
+// `hiddenCount`, which leaves out ANSI/C0 terminal formatting and the
+// ZWNJ/ZWJ of ordinary Persian/Indic text and ZWJ emoji) stripped from one
+// piece of content taints the session: a payload smuggled one invisible code
+// point per byte runs well past this.
+const INVISIBLE_CHAR_TAINT_THRESHOLD = 32
+// This plugin's own manifest name, as it appears before the `@marketplace`
+// suffix in a managed prependPlugins entry (the session.start posture check).
+const PLUGIN_NAME = 'barmkin-mod'
 
 let pluginOptions: Record<string, unknown> = {}
 
@@ -144,7 +164,9 @@ async function callJevSystemOne(
   jev: JevOptions,
   rawText: string,
 ): Promise<SystemOneParseResult> {
-  const text = redactText(rawText, REDACTION_RULES).text.slice(0, 4000)
+  const input = classifierInput(rawText, REDACTION_RULES, redactionCounters)
+  if (input === null) return { ok: false, reason: 'withheld_input' }
+  const text = input.slice(0, 4000)
   const body = buildSystemOneRequest(jev.model, { content: text }, JEV_QUESTIONS)
   const controller = new AbortController()
   const timer = $.clock.after(JEV_TIMEOUT_MS, () => controller.abort())
@@ -175,6 +197,46 @@ async function callJevSystemOne(
   }
 }
 
+function redactInEitherView(text: string): { text: string; redactedCount: number } {
+  return redactInEitherViewLib(text, REDACTION_RULES, redactionCounters)
+}
+
+let taintWrites: Promise<unknown> = Promise.resolve()
+
+// Taint writes run one at a time, in call order, so a fire-and-forget scrub
+// cannot interleave with another write or land after a prompt.submit reset.
+function serializeTaintWrite<T>(write: () => Promise<T>): Promise<T> {
+  const run = taintWrites.then(write)
+  taintWrites = run.catch(() => {})
+  return run
+}
+
+function markTainted($: any, reason: string): Promise<void> {
+  return serializeTaintWrite(async () => {
+    await update($, tainted, () => true)
+    await update($, taintReason, (current: string | null) => current ?? reason)
+  })
+}
+
+async function readTaint($: any): Promise<{ tainted: boolean; reason: string | null }> {
+  await taintWrites
+  return { tainted: await read($, tainted), reason: await read($, taintReason) }
+}
+
+// Shared by every scrubInvisible call site (the outermost redaction pass, tool.describe,
+// and session.receive): taints the session when a scrub stripped more than
+// INVISIBLE_CHAR_TAINT_THRESHOLD characters.
+// The first reason recorded for a session wins, so a later taint never
+// replaces the evidence the deny message and the verdict already show.
+async function taintForScrub($: any, hiddenCount: number, source: string): Promise<void> {
+  if (hiddenCount <= INVISIBLE_CHAR_TAINT_THRESHOLD) return
+  try {
+    await markTainted($, 'stripped ' + hiddenCount + ' invisible character(s) from ' + source)
+  } catch {
+    $.ui.log('barmkin-mod: could not record taint for ' + source + ' (' + hiddenCount + ' invisible character(s) stripped)')
+  }
+}
+
 async function recordBreakerFailure($: any): Promise<void> {
   const failures = (await read($, breakerFailureCount)) + 1
   await update($, breakerFailureCount, () => failures)
@@ -193,6 +255,18 @@ async function screenContent(
   label: string,
   toolUseId: string | undefined,
 ): Promise<ScreenOutcome> {
+  const raw = text
+  if (exceedsScanLimit(raw)) {
+    return {
+      decision: 'deny',
+      tainted: false,
+      reason: 'it is longer than the 16 KiB scan limit',
+      question: 'injection',
+      probability: 0,
+      model: 'heuristic',
+    }
+  }
+  text = scrubInvisible(raw).text
   const jev = getJevOptions(pluginOptions)
   const now = Date.now()
   const breakerUntil = await read($, breakerOpenUntil)
@@ -201,12 +275,12 @@ async function screenContent(
   const local: ScoreSource = {
     model: 'heuristic',
     injection: heuristicInjectionScore(text),
-    credentials: containsAnySecret(text, REDACTION_RULES) ? 0.9 : 0,
+    credentials: containsSecretInEitherView(raw, REDACTION_RULES) ? 0.9 : 0,
   }
   let jevScores: ScoreSource | null = null
 
   if (canUseJev) {
-    const outcome = await callJevSystemOne($, jev, text)
+    const outcome = await callJevSystemOne($, jev, raw)
     if (outcome.ok) {
       jevScores = {
         model: outcome.model,
@@ -214,7 +288,7 @@ async function screenContent(
         credentials: outcome.answers.credentials ?? 0,
       }
       await update($, breakerFailureCount, () => 0)
-    } else {
+    } else if (outcome.reason !== 'withheld_input') {
       await recordBreakerFailure($)
     }
   }
@@ -230,10 +304,7 @@ async function screenContent(
     at: now,
   }))
 
-  if (composed.tainted) {
-    await update($, tainted, () => true)
-    await update($, taintReason, () => composed.reason)
-  }
+  if (composed.tainted) await markTainted($, composed.reason)
 
   if (toolUseId) {
     try {
@@ -254,16 +325,46 @@ async function screenContent(
 // ---------------------------------------------------------------------------
 
 async function sessionStartHook($: any, e: any, next: any) {
+  const statusLines: string[] = []
+
   try {
     const version = await $.session.version()
     if (typeof version === 'string' && !meetsMinimumVersion(version)) {
-      $.ui.status(
+      statusLines.push(
         'barmkin-mod needs Claude Code >= ' + MIN_CLAUDE_CODE_VERSION + ' (running ' + version + '); some protections may not apply',
       )
     }
   } catch {
     // $.session.version() unavailable on this build; nothing to warn about
   }
+
+  let merged: Record<string, unknown> | null = null
+  try {
+    merged = await $.settings.read()
+  } catch {
+    // $.settings.read() unavailable or refused on this build; checkPosture reports it as unverified
+  }
+  if (typeof merged !== 'object') merged = null
+  let policy: Record<string, unknown> | null = null
+  try {
+    policy = await $.settings.read({ source: 'policy' })
+  } catch {
+    // the policy source refused or unavailable; checkPosture reports seating as unverified
+  }
+  if (typeof policy !== 'object') policy = null
+  const mcpAllowlist = parseAllowlist(pluginOptions.mcp_server_allowlist)
+  for (const warning of checkPosture({ merged, policy }, PLUGIN_NAME, mcpAllowlist)) {
+    statusLines.push('barmkin-mod posture: ' + warning)
+  }
+
+  if (statusLines.length > 0) {
+    try {
+      $.ui.status(statusLines.join(' | '))
+    } catch {
+      // no status surface on this build; the commands below still register
+    }
+  }
+
   try {
     await $.command.register({ name: 'barmkin-mod-findings', description: 'Open the barmkin-mod SAST findings pane' })
     await $.command.register({ name: 'barmkin-mod-status', description: 'Show barmkin-mod taint, breaker, and last classifier verdict' })
@@ -278,12 +379,21 @@ async function sessionStartHook($: any, e: any, next: any) {
 // ---------------------------------------------------------------------------
 
 async function promptSubmitHook($: any, e: any, next: any) {
-  await update($, tainted, () => false)
-  await update($, taintReason, () => null)
+  await serializeTaintWrite(async () => {
+    await update($, tainted, () => false)
+    await update($, taintReason, () => null)
+  })
 
   if (typeof e.text !== 'string') return next(e)
-  const { text, redactedCount } = redactText(e.text, REDACTION_RULES, redactionCounters)
+  if (exceedsScanLimit(e.text)) {
+    return { drop: 'barmkin-mod: your message is longer than the 16 KiB scan limit, so it was withheld' }
+  }
+  // Detection runs on the scrubbed view; the original text is forwarded unless a secret is redacted.
+  const { text, redactedCount } = redactInEitherView(e.text)
   if (redactedCount === 0) return next(e)
+  if (text === WITHHELD_TEXT) {
+    return { drop: 'barmkin-mod: your message could not be fully scanned after redaction, so it was withheld' }
+  }
   $.ui.log('barmkin-mod: redacted ' + redactedCount + ' likely secret(s) from your message before sending it')
   return next({ ...e, text })
 }
@@ -296,8 +406,14 @@ async function toolDescribeHook($: any, e: any, next: any) {
   const current = await next(e)
   const description = typeof current?.description === 'string' ? current.description : e.description
   if (typeof description !== 'string') return current
-  const { description: cleaned, flagged } = neutralizeDescription(description)
-  if (!flagged) return current
+
+  const scrubbed = scrubInvisible(description)
+  void taintForScrub($, scrubbed.hiddenCount, 'an MCP tool description')
+
+  const { description: cleaned, flagged } = neutralizeDescription(scrubbed.text)
+  if (!flagged) {
+    return scrubbed.text === description ? current : { ...current, description: scrubbed.text }
+  }
   $.ui.log('barmkin-mod: flagged instruction-like text in a tool description (' + e.tool + ')', { to: 'debug' })
   if (cleaned === description) return current
   return { ...current, description: cleaned }
@@ -334,9 +450,8 @@ async function mcpGuardCatch($: any, e: any, next: any) {
 // ---------------------------------------------------------------------------
 
 async function outwardEffectGuardHook($: any, e: any, next: any) {
-  const isTainted = await read($, tainted)
+  const { tainted: isTainted, reason } = await readTaint($)
   if (isTainted && typeof e.command === 'string' && isOutwardEffectCommand(e.command)) {
-    const reason = await read($, taintReason)
     return {
       deny:
         'barmkin-mod: this session is handling untrusted content (' +
@@ -401,11 +516,42 @@ async function taintScreenCatch($: any, e: any, next: any) {
 // any context a later hook in this file added -- before Claude reads it).
 // ---------------------------------------------------------------------------
 
+// Read's image variant carries its payload as base64 at result.result.base64
+// (flat) or result.result.file.base64 (file record). Gated on the Read tool so
+// an MCP result cannot hide plaintext there.
+function readImageBase64(e: any, result: any): string | undefined {
+  const payload = result.result
+  if (e.tool !== 'Read' || !payload || typeof payload !== 'object' || payload.type !== 'image') return undefined
+  const base64 = typeof payload.base64 === 'string' ? payload.base64 : payload.file?.base64
+  return typeof base64 === 'string' ? base64 : undefined
+}
+
+// Decodes an image payload that already passed the per-string cap and runs the
+// rules over its bytes, so a secret in a plaintext file with an image extension
+// is caught. The base64 text itself also goes through the normal redaction pass.
+function imagePayloadWithholdReason(base64: string): string | null {
+  let bytes: string
+  try {
+    bytes = atob(base64)
+  } catch {
+    return 'this Read image payload is not valid base64'
+  }
+  return containsAnySecret(bytes, REDACTION_RULES) ? 'this Read image payload contains a secret-shaped value' : null
+}
+
 async function redactionHook($: any, e: any, next: any) {
   const result = await next(e)
   if (!result || result.deny) return result
+  if (exceedsResultBudget(result)) {
+    return { deny: 'barmkin-mod: this tool result is larger than the redaction scan budget, so it was withheld' }
+  }
+
+  const imageBase64 = readImageBase64(e, result)
+  const imageReason = imageBase64 === undefined ? null : imagePayloadWithholdReason(imageBase64)
+  if (imageReason) return { deny: 'barmkin-mod: ' + imageReason + ', so it was withheld' }
 
   let changed = false
+  let hiddenCount = 0
   const next_: any = { ...result }
 
   // Every string inside the result is rewritten in place, whatever its
@@ -413,10 +559,14 @@ async function redactionHook($: any, e: any, next: any) {
   // typed record (Bash `{stdout, stderr, ...}`, Read `{file: {content}}`).
   // The record keeps its shape so core's output-schema validation passes.
   // Core's model-visible rendering in `text` is redacted the same way.
+  // Scrubbed before redaction: a zero-width character spliced into a
+  // token shouldn't be able to help it dodge a secret pattern either.
   const redactValue = (value: unknown): unknown => {
     if (typeof value === 'string') {
-      const { text: redacted, redactedCount } = redactText(value, REDACTION_RULES, redactionCounters)
-      if (redactedCount === 0) return value
+      const scrubbed = scrubInvisible(value)
+      hiddenCount += scrubbed.hiddenCount
+      const { text: redacted, redactedCount } = redactInEitherView(value)
+      if (redactedCount === 0 && scrubbed.strippedCount === 0) return value
       changed = true
       return redacted
     }
@@ -427,17 +577,24 @@ async function redactionHook($: any, e: any, next: any) {
     return value
   }
   if ('result' in result) next_.result = redactValue(result.result)
+  const hiddenInResult = hiddenCount
+  hiddenCount = 0
   if (typeof result.text === 'string') next_.text = redactValue(result.text)
+  hiddenCount = Math.max(hiddenInResult, hiddenCount)
 
   if (Array.isArray(result.context)) {
     const redactedContext = result.context.map((c: unknown) => {
       if (typeof c !== 'string') return c
-      const { text: redacted, redactedCount } = redactText(c, REDACTION_RULES, redactionCounters)
-      if (redactedCount > 0) changed = true
+      const scrubbed = scrubInvisible(c)
+      hiddenCount += scrubbed.hiddenCount
+      const { text: redacted, redactedCount } = redactInEitherView(c)
+      if (redactedCount > 0 || scrubbed.strippedCount > 0) changed = true
       return redacted
     })
     next_.context = redactedContext
   }
+
+  void taintForScrub($, hiddenCount, 'tool:' + (typeof e.tool === 'string' && parseMcpServerName(e.tool) ? 'mcp' : e.tool))
 
   return changed ? next_ : result
 }
@@ -562,11 +719,18 @@ async function sastHook($: any, e: any, next: any) {
 
 async function sessionReceiveHook($: any, e: any, next: any) {
   if (typeof e.text !== 'string' || e.text.length === 0) return next(e)
+
+  const scrubbed = scrubInvisible(e.text)
+  void taintForScrub($, scrubbed.hiddenCount, 'an inbound peer message')
+  if (exceedsScanLimit(e.text)) {
+    return { consumed: 'barmkin-mod: withheld an inbound message (it is longer than the 16 KiB scan limit)' }
+  }
+
   const verdict = await screenContent($, e.text, 'peer:' + (e.origin?.kind ?? 'unknown'), undefined)
   if (verdict.decision === 'deny') {
     return { consumed: 'barmkin-mod: withheld an inbound message (' + verdict.reason + ')' }
   }
-  return next(e)
+  return next(scrubbed.text === e.text ? e : { ...e, text: scrubbed.text })
 }
 
 async function sessionReceiveCatch($: any, e: any, next: any) {
@@ -575,7 +739,11 @@ async function sessionReceiveCatch($: any, e: any, next: any) {
 
 async function sessionSendHook($: any, e: any, next: any) {
   if (typeof e.text !== 'string') return next(e)
-  if (containsAnySecret(e.text, REDACTION_RULES)) {
+  if (exceedsScanLimit(e.text)) {
+    return { isDelivered: false, reason: 'barmkin-mod: message withheld, it is longer than the 16 KiB scan limit' }
+  }
+  // Detection runs on the scrubbed view; the original text is delivered when no secret is found.
+  if (containsSecretInEitherView(e.text, REDACTION_RULES)) {
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it appears to contain a secret' }
   }
   return next(e)
@@ -586,9 +754,8 @@ async function sessionSendCatch($: any, e: any, next: any) {
 }
 
 async function agentSpawnHook($: any, e: any, next: any) {
-  const isTainted = await read($, tainted)
+  const { tainted: isTainted, reason } = await readTaint($)
   if (isTainted) {
-    const reason = await read($, taintReason)
     return {
       deny:
         'barmkin-mod: subagent spawn blocked while this session is tainted (' +
@@ -652,7 +819,7 @@ async function findingsPaneHook($: any, e: any, next: any) {
 }
 
 async function hudHook($: any, e: any, next: any) {
-  const isTainted = await read($, tainted)
+  const { tainted: isTainted } = await readTaint($)
   const verdict = await read($, lastVerdict)
   if (!isTainted && !verdict) return next(e)
 
@@ -676,8 +843,7 @@ async function findingsCommandHook($: any) {
 }
 
 async function statusCommandHook($: any) {
-  const isTainted = await read($, tainted)
-  const reason = await read($, taintReason)
+  const { tainted: isTainted, reason } = await readTaint($)
   const verdict = await read($, lastVerdict)
   const breakerUntil = await read($, breakerOpenUntil)
   const lines = [
@@ -714,7 +880,6 @@ export function register(on: any, options: Record<string, unknown>) {
   on('session.receive', sessionReceiveHook).catch(sessionReceiveCatch)
   on('session.send', sessionSendHook).catch(sessionSendCatch)
   on('agent.spawn', agentSpawnHook).catch(agentSpawnCatch)
-
   on('ui.render', { component: 'Pane' }, findingsPaneHook)
   on('ui.render', { component: 'AbovePrompt' }, hudHook)
   on('command.run', { command: 'barmkin-mod-findings' }, findingsCommandHook)
