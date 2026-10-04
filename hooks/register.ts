@@ -155,7 +155,7 @@ async function callJevSystemOne(
   jev: JevOptions,
   rawText: string,
 ): Promise<SystemOneParseResult> {
-  const text = redactInEitherView(rawText.slice(0, 4000)).text
+  const text = redactInEitherView(rawText).text.slice(0, 4000)
   const body = buildSystemOneRequest(jev.model, { content: text }, JEV_QUESTIONS)
   const controller = new AbortController()
   const timer = $.clock.after(JEV_TIMEOUT_MS, () => controller.abort())
@@ -247,8 +247,7 @@ async function screenContent(
   toolUseId: string | undefined,
 ): Promise<ScreenOutcome> {
   const raw = text
-  text = scrubInvisible(text).text
-  if (exceedsScanLimit(text)) {
+  if (exceedsScanLimit(raw)) {
     return {
       decision: 'deny',
       tainted: false,
@@ -258,6 +257,7 @@ async function screenContent(
       model: 'heuristic',
     }
   }
+  text = scrubInvisible(raw).text
   const jev = getJevOptions(pluginOptions)
   const now = Date.now()
   const breakerUntil = await read($, breakerOpenUntil)
