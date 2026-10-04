@@ -2,8 +2,8 @@
 // characters that can hide an instruction or smuggle data past a human or a
 // naive text scanner (OWASP LLM01:2026 mitigation #5; LLM10:2026 risk
 // example #6; "Trojan Source", CVE-2021-42574). No `$` use here: imported
-// into register.ts, whose hooks call it on tool results, MCP descriptions,
-// and peer messages.
+// into register.ts and redaction.ts, whose hooks call it on tool results, MCP
+// descriptions, peer messages, and the prompt.submit and session.send checks.
 
 // Full ANSI/VT escape sequences, not just the bare ESC byte: CSI (`ESC [
 // ... final-byte`), OSC (`ESC ] ... BEL` or `... ESC \`), and the shorter

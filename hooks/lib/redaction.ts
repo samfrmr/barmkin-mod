@@ -13,12 +13,8 @@ export interface RedactionResult {
 // per such rule. The JWT rule is quadratic on `eyJ-` runs too: measured at
 // about 76 ms per 16 KiB string at the cap (the worst input found). One
 // redaction pass over a full string costs 46 ms + 76 ms = 122 ms, and
-// redactInEitherView runs two passes per string. The worst tool result is five
-// full strings (see MAX_RESULT_CHARS): 5 x 2 x 122 ms = 1220 ms of redaction,
-// plus one screen pass on the joined text, which containsSecretInEitherView runs
-// as two passes (2 x 122 ms = 244 ms), plus the Jev payload's two passes over the
-// same 16 KiB (about 244 ms, when a classifier is configured): about 1708 ms in
-// total, above the 1-second guard budget.
+// redactInEitherView runs two passes per string. The per-result total is in
+// the MAX_RESULT_CHARS comment below.
 // Longer text is withheld as a whole rather than scanned.
 const MAX_SCANNED_CHARS = 16 * 1024
 
