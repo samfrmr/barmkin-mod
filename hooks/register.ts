@@ -153,9 +153,9 @@ const JEV_QUESTIONS: Record<string, NoulQuestion> = {
 async function callJevSystemOne(
   $: any,
   jev: JevOptions,
-  scrubbedText: string,
+  rawText: string,
 ): Promise<SystemOneParseResult> {
-  const text = redactInEitherView(scrubbedText).text.slice(0, 4000)
+  const text = redactInEitherView(rawText.slice(0, 4000)).text
   const body = buildSystemOneRequest(jev.model, { content: text }, JEV_QUESTIONS)
   const controller = new AbortController()
   const timer = $.clock.after(JEV_TIMEOUT_MS, () => controller.abort())
@@ -271,7 +271,7 @@ async function screenContent(
   let jevScores: ScoreSource | null = null
 
   if (canUseJev) {
-    const outcome = await callJevSystemOne($, jev, text)
+    const outcome = await callJevSystemOne($, jev, raw)
     if (outcome.ok) {
       jevScores = {
         model: outcome.model,

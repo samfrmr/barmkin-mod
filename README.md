@@ -138,7 +138,7 @@ This never blocks anything — it's a status line, not a guard — and a setting
   |---|---|
   | Secret redaction, taint + injection screen, MCP tool-poisoning guard, agent-to-agent firewall, SAST UI | Yes -- all on `tool.call`/`tool.describe`/`session.*`/`agent.spawn`, none of which `sec-default` forwards past the user tier |
   | Posture self-check (`session.start`, `$.settings.read`) | Yes |
-  | Invisible-Unicode/bidi/ANSI scrubber | Yes for the sites this bundle wires it into (`tool.call`, `tool.describe`, `session.receive`); a future screen of `skill.prompt`/`prompt.context` content would need the seat below |
+  | Invisible-Unicode/bidi/ANSI scrubber | Yes for the sites this bundle wires it into (`tool.call`, `tool.describe`, `session.receive`, and the detection on `prompt.submit` and `session.send`); a future screen of `skill.prompt`/`prompt.context` content would need the seat below |
   | Any future `skill.prompt` or `prompt.context`/`prompt.section` screen (not built in this bundle) | **No** -- needs this mod named in managed `prependPlugins` ahead of `sec-default@builtin`, or `sec-default` forwards that content past the user tier before this mod ever sees it |
 
 - **Fail closed, with a 1-second budget.** Every hook that can deny/consume/withhold has a `.catch` that does so on failure (`next.error.kind` names whether it was a throw or a timeout). Purely advisory hooks (SAST's inline findings, the HUD) have none, so the documented no-`.catch` default applies: a pre-`next()` failure skips the hook silently (the action proceeds without the annotation), a post-`next()` failure leaves the result as `next()` produced it. Neither path can loosen a decision this mod or anything upstream of it already made.
