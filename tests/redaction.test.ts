@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { REDACTION_RULES } from '../hooks/lib/redaction-rules'
-import { redactText, redactInEitherView, containsAnySecret, containsSecretInEitherView, exceedsResultBudget, exceedsScanLimit } from '../hooks/lib/redaction'
+import { redactText, redactInEitherView, classifierInput, containsAnySecret, containsSecretInEitherView, exceedsResultBudget, exceedsScanLimit } from '../hooks/lib/redaction'
 import { scrubInvisible } from '../hooks/lib/scrub'
 
 test('redacts every example vector with a numbered placeholder', () => {
@@ -318,6 +318,12 @@ test('helper-level: a two-pass redaction whose placeholders push the text past t
   expect(out.text).not.toContain('[REDACTED:oversized')
   expect(out.text).toContain('withheld')
   expect(out.redactedCount).toBeGreaterThan(0)
+  expect(classifierInput(input, REDACTION_RULES, { 'env-key': 100000 })).toBeNull()
+})
+
+test('helper-level: the classifier receives the redacted text for ordinary input, and nothing for a withheld marker', () => {
+  expect(classifierInput('plain page text', REDACTION_RULES, {})).toBe('plain page text')
+  expect(classifierInput('SECRET=abcdefgh12345678;'.repeat(680), REDACTION_RULES, { 'env-key': 100000 })).toBeNull()
 })
 
 test('helper-level: a secret hidden behind a zero-width character is refused on both views', () => {

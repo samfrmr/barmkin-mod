@@ -19,6 +19,7 @@ import { REDACTION_RULES } from './lib/redaction-rules'
 import {
   redactText,
   redactInEitherView as redactInEitherViewLib,
+  classifierInput,
   containsAnySecret,
   containsSecretInEitherView,
   exceedsResultBudget,
@@ -162,7 +163,9 @@ async function callJevSystemOne(
   jev: JevOptions,
   rawText: string,
 ): Promise<SystemOneParseResult> {
-  const text = redactInEitherView(rawText).text.slice(0, 4000)
+  const input = classifierInput(rawText, REDACTION_RULES, redactionCounters)
+  if (input === null) return { ok: false, reason: 'withheld_input' }
+  const text = input.slice(0, 4000)
   const body = buildSystemOneRequest(jev.model, { content: text }, JEV_QUESTIONS)
   const controller = new AbortController()
   const timer = $.clock.after(JEV_TIMEOUT_MS, () => controller.abort())
@@ -284,7 +287,7 @@ async function screenContent(
         credentials: outcome.answers.credentials ?? 0,
       }
       await update($, breakerFailureCount, () => 0)
-    } else {
+    } else if (outcome.reason !== 'withheld_input') {
       await recordBreakerFailure($)
     }
   }

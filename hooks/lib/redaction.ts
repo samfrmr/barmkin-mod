@@ -15,9 +15,10 @@ export interface RedactionResult {
 // redaction pass over a full string costs 46 ms + 76 ms = 122 ms, and
 // redactInEitherView runs two passes per string. The worst tool result is five
 // full strings (see MAX_RESULT_CHARS): 5 x 2 x 122 ms = 1220 ms of redaction,
-// plus one 16 KiB screen pass of about 120 ms on the joined text, plus the Jev
-// payload's two passes over the same 16 KiB (about 244 ms, when a classifier is
-// configured): about 1584 ms in total, above the 1-second guard budget.
+// plus one screen pass on the joined text, which containsSecretInEitherView runs
+// as two passes (2 x 122 ms = 244 ms), plus the Jev payload's two passes over the
+// same 16 KiB (about 244 ms, when a classifier is configured): about 1708 ms in
+// total, above the 1-second guard budget.
 // Longer text is withheld as a whole rather than scanned.
 const MAX_SCANNED_CHARS = 16 * 1024
 
@@ -32,7 +33,7 @@ export function exceedsScanLimit(text: string): boolean {
 // result five full strings. Each full string costs about 46 ms for the generic
 // key rule and 76 ms for the JWT rule per redaction pass, and redactInEitherView
 // runs two passes, so the redaction passes cost 5 x 2 x 122 ms = 1220 ms, plus
-// one 120 ms screen pass and the Jev payload's 244 ms: about 1584 ms per tool
+// one 244 ms screen pass and the Jev payload's 244 ms: about 1708 ms per tool
 // result, above the 1-second guard budget. A Read image's
 // base64 payload is one of the strings: it survives only while it fits the
 // per-string cap, roughly 12 KiB of image. Larger images are withheld with the
@@ -100,6 +101,21 @@ export function containsSecretInEitherView(text: string, rules: RedactionRule[])
 // redactText would then collapse it into an oversized placeholder. Any text that
 // grows past the limit is withheld with a stated reason instead, so it is never
 // passed through and never replaced by a placeholder that reads as content.
+export const WITHHELD_TEXT = 'barmkin-mod: withheld, the redacted text exceeds the 16 KiB scan limit'
+
+// The classifier must not score a withheld marker or an oversize placeholder as
+// content, so such input yields no classifier payload. The screen then falls
+// back to the local heuristics only, and the classifier is not called.
+export function classifierInput(
+  text: string,
+  rules: RedactionRule[],
+  counters: Record<string, number>,
+): string | null {
+  if (exceedsScanLimit(text)) return null
+  const redacted = redactInEitherView(text, rules, counters)
+  return redacted.text === WITHHELD_TEXT ? null : redacted.text
+}
+
 export function redactInEitherView(
   text: string,
   rules: RedactionRule[],
@@ -107,7 +123,7 @@ export function redactInEitherView(
 ): { text: string; redactedCount: number } {
   const first = redactText(text, rules, counters)
   if (exceedsScanLimit(first.text)) {
-    return { text: 'barmkin-mod: withheld, the redacted text exceeds the 16 KiB scan limit', redactedCount: first.redactedCount + 1 }
+    return { text: WITHHELD_TEXT, redactedCount: first.redactedCount + 1 }
   }
   const second = redactText(scrubInvisible(first.text).text, rules, counters)
   return { text: second.text, redactedCount: first.redactedCount + second.redactedCount }
