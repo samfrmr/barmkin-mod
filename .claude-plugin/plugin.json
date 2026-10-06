@@ -2,7 +2,7 @@
   "name": "barmkin-mod",
   "displayName": "Barmkin Mod",
   "version": "0.1.0",
-  "description": "Claude Code mods security layer: secret redaction, untrusted-content taint, MCP tool-poisoning guard, agent-to-agent firewall, SAST findings UI, and a Jev System One classifier gateway with an explanation surface.",
+  "description": "Claude Code mods security layer: secret redaction, untrusted-content taint, MCP tool-poisoning guard, skill-content screen, agent-to-agent firewall, SAST findings UI, and a Jev System One classifier gateway with an explanation surface.",
   "author": { "name": "samfrmr" },
   "repository": "https://github.com/samfrmr/barmkin-mod",
   "license": "MIT",
