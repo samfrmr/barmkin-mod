@@ -48,6 +48,7 @@ import { parseSemgrepJson, formatFindingsContext, worstSeverity, buildSemgrepCan
 import { extractResultText, appendContext, withholdResult } from './lib/tool-result'
 import { meetsMinimumVersion, MIN_CLAUDE_CODE_VERSION } from './lib/version'
 import { checkPosture } from './lib/posture'
+import { skillBodyWithheldText, skillListingWithheldText, neutralizeSkillListing } from './lib/skill-guard'
 
 // ---------------------------------------------------------------------------
 // $.state atoms. Declared values must match types/index.d.ts, and plugin/key
@@ -771,6 +772,96 @@ async function agentSpawnCatch($: any, e: any, next: any) {
 }
 
 // ---------------------------------------------------------------------------
+// Skill content. skill.prompt fires with each skill body, after inline-shell
+// output is substituted, for inline, context: fork and agent-preloaded skills.
+// Its payload is { skill: <name string>, text }; the dispatcher rejects a
+// changed `skill`, so only `text` is ever rewritten. Org seat only: sec-default
+// forwards skill.prompt past the user tier, so this fires only when the mod is
+// seated in managed prependPlugins ahead of sec-default (README "Seat
+// requirements"). Like toolDescribeHook, it calls next first and screens and
+// redacts the text that came out, so redaction sees the final body last.
+// ---------------------------------------------------------------------------
+
+async function skillPromptHook($: any, e: any, next: any) {
+  const current = await next(e)
+  const text = typeof current?.text === 'string' ? current.text : e.text
+  if (typeof text !== 'string') return current ?? e
+
+  const scrubbed = scrubInvisible(text)
+  void taintForScrub($, scrubbed.hiddenCount, 'a skill body')
+
+  const verdict = await screenContent($, text, 'skill:' + e.skill, undefined)
+  if (verdict.decision === 'deny') {
+    return { ...(current ?? e), text: skillBodyWithheldText(verdict.reason) }
+  }
+
+  const { text: redacted, redactedCount } = redactInEitherView(text)
+  if (redacted === WITHHELD_TEXT) {
+    return { ...(current ?? e), text: skillBodyWithheldText('the redacted body exceeds the 16 KiB scan limit') }
+  }
+  if (redactedCount > 0) {
+    $.ui.log('barmkin-mod: redacted ' + redactedCount + ' likely secret(s) from skill ' + e.skill)
+  }
+  const body = verdict.tainted ? redacted + '\n\n' + UNTRUSTED_CONTENT_WARNING : redacted
+  return { ...(current ?? e), text: body }
+}
+
+async function skillPromptCatch($: any, e: any, next: any) {
+  return { skill: e.skill, text: skillBodyWithheldText('the skill screen failed (' + next.error.kind + ')') }
+}
+
+// prompt.attachment carries every attachment type, so the type check runs
+// before anything else and every other attachment passes straight through.
+// A skill listing is `prompt.attachment{type:'skill_listing', text}`, one per
+// session and one per spawned subagent. The dispatcher honours a rewritten
+// `text` and rejects a change to `type`, `origin`, `agentId` or `detail`.
+async function skillListingHook($: any, e: any, next: any) {
+  if (e.type !== 'skill_listing') return next(e)
+  const current = await next(e)
+  const text = typeof current?.text === 'string' ? current.text : e.text
+  if (typeof text !== 'string') return current ?? e
+
+  const scrubbed = scrubInvisible(text)
+  void taintForScrub($, scrubbed.hiddenCount, 'the skill listing')
+
+  const { text: neutralized, flagged } = neutralizeSkillListing(scrubbed.text)
+  if (flagged) $.ui.log('barmkin-mod: flagged instruction-like text in the skill listing', { to: 'debug' })
+  if (neutralized === text) return current ?? e
+  return { ...(current ?? e), text: neutralized }
+}
+
+async function skillListingCatch($: any, e: any, next: any) {
+  if (e?.type !== 'skill_listing') return e
+  return { ...e, text: skillListingWithheldText('the listing screen failed (' + next.error.kind + ')') }
+}
+
+// Gates the Skill tool itself. A loaded skill is untrusted content in its own
+// right: its body is screened by skillPromptHook, and the invocation then taints
+// the session so later outward-effect Bash and further skill loads are held
+// until the user's next message. The taint is recorded after a successful load,
+// so a failed call does not taint.
+async function skillToolGuardHook($: any, e: any, next: any) {
+  const { tainted: isTainted, reason } = await readTaint($)
+  if (isTainted) {
+    return {
+      deny:
+        'barmkin-mod: loading a skill is blocked while this session is handling untrusted content (' +
+        (reason ?? 'unspecified') +
+        '). Ask again after a new message.',
+    }
+  }
+  const result = await next(e)
+  if (!result || result.deny || result.isError) return result
+  const name = typeof e.skill === 'string' ? e.skill : 'unnamed'
+  await markTainted($, 'skill "' + name + '" was loaded')
+  return result
+}
+
+async function skillToolGuardCatch($: any, e: any, next: any) {
+  return { deny: 'barmkin-mod: the skill guard failed (' + next.error.kind + '), so this skill was not loaded' }
+}
+
+// ---------------------------------------------------------------------------
 // Classifier explanation surface: HUD band + findings pane.
 // ---------------------------------------------------------------------------
 
@@ -876,6 +967,11 @@ export function register(on: any, options: Record<string, unknown>) {
   on('tool.call', { tool: ['WebFetch', 'WebSearch'] }, webFetchTaintHook).catch(taintScreenCatch)
   on('tool.call', { tool: 'Read' }, readTaintHook).catch(taintScreenCatch)
   on('tool.call', { tool: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] }, sastHook)
+
+  on('tool.call', { tool: 'Skill' }, skillToolGuardHook).catch(skillToolGuardCatch)
+
+  on('skill.prompt', skillPromptHook).catch(skillPromptCatch)
+  on('prompt.attachment', skillListingHook).catch(skillListingCatch)
 
   on('session.receive', sessionReceiveHook).catch(sessionReceiveCatch)
   on('session.send', sessionSendHook).catch(sessionSendCatch)

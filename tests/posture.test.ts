@@ -17,6 +17,15 @@ test('warns when sec-default is seated ahead of this plugin', () => {
   expect(warnings.some((w) => w.includes('sec-default is seated ahead'))).toBe(true)
 })
 
+test('the sec-default seat warning names skill.prompt, the skill-body screen it hides', () => {
+  const warnings = checkPosture(
+    { merged: {}, policy: { prependPlugins: ['sec-default@builtin', 'barmkin-mod@acme'] } },
+    'barmkin-mod',
+    [],
+  )
+  expect(warnings.some((w) => w.includes('sec-default is seated ahead') && w.includes('skill.prompt'))).toBe(true)
+})
+
 test('does not warn about seating when this plugin is ahead of sec-default', () => {
   const warnings = checkPosture(
     { merged: { sandbox: { enabled: true }, disableSkillShellExecution: true }, policy: { prependPlugins: ['barmkin-mod@acme', 'sec-default@builtin'] } },

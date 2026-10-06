@@ -26,6 +26,9 @@ CI validates against Claude Code 2.1.287+ because the sandbox this plugin was de
 | 7 | Classifier explanation surface | `$.ui.notice` under the pending permission dialog, an `AbovePrompt` HUD band, `/barmkin-mod-status` |
 | 8 | Invisible-Unicode, bidi and ANSI scrubber | the outermost `tool.call` redaction pass, `tool.describe`, `session.receive`, `session.send` and `prompt.submit` (scrubbed before the secret check on both) |
 | 9 | Posture self-check | `session.start` (`$.settings.read`, `$.ui.status`) |
+| 10 | Skill-body screen and redaction | `skill.prompt` (org seat only, see [Seat requirements](#security-posture)) |
+| 11 | Skill-listing neutraliser | `prompt.attachment` on `skill_listing` (user tier) |
+| 12 | Skill-tool taint gate | `tool.call` on `Skill`: deny while tainted, a load taints (user tier) |
 
 ### Secret redaction
 
@@ -56,6 +59,14 @@ While the session is tainted, a `tool.call` hook on Bash denies any command matc
 `tool.describe` strips sentences containing instruction-like phrases ("ignore previous instructions", "never tell the user", "always call", etc.) from `mcp__*` tool descriptions before Claude ever reads them, rather than rejecting the whole description outright — a legitimate tool whose description merely mentions a risky word in passing still reads sensibly. Phrases that are common in legitimate usage notes ("you must", "system prompt") only flag the description in the debug log; the sentence is kept intact.
 
 `tool.call` on `mcp__*` enforces a per-server allowlist from the `mcp_server_allowlist` user-config option. An empty allowlist (the default) allows every server — audit-only, matching the "decide with evidence" posture: most installs don't know their MCP server inventory up front, so the guard doesn't block anything until configured.
+
+### Skill content
+
+`skill.prompt` fires with each skill body once inline shell output is substituted, for model-invoked, `context: fork`, and agent-preloaded skills. Its payload is the skill's name and text, and nothing else: it carries no source or plugin field, so the screen treats every skill body the same rather than narrowing by plugin, personal, or project provenance. The body runs through the same screen as fetched content, then the same redaction as tool results. A deny-grade screen replaces the body with a withhold note; an escalate taints the session and appends the untrusted-content warning; any secret is redacted. The skill's name is never changed, since the dispatcher rejects that. A body over the 16 KiB scan limit is withheld whole, so a large skill is unavailable while this mod screens skill bodies.
+
+`prompt.attachment` with `type: "skill_listing"` carries the skill listing. It fires once per session and once per spawned subagent. Each `- name: description` line goes through the same neutraliser as MCP tool descriptions, so an instruction-like sentence in a skill's description is stripped before Claude reads the list. A skill name that contains a colon (a plugin skill's `plugin:skill`) is kept whole.
+
+`tool.call` on `Skill` denies a skill load while the session is tainted. A successful load is itself a taint source, recorded as `skill "<name>" was loaded`, so a second skill load in the same turn, and any outward-effect Bash command, are held until the user's next message. A failed load does not taint.
 
 ### Agent-to-agent firewall
 
@@ -137,9 +148,11 @@ This never blocks anything — it's a status line, not a guard — and a setting
   | Capability | Works from the user tier? |
   |---|---|
   | Secret redaction, taint + injection screen, MCP tool-poisoning guard, agent-to-agent firewall, SAST UI | Yes -- all on `tool.call`/`tool.describe`/`session.*`/`agent.spawn`, none of which `sec-default` forwards past the user tier |
+  | Skill-listing neutraliser (`prompt.attachment`, `skill_listing`) and the Skill-tool taint gate (`tool.call` on `Skill`) | Yes -- neither event is on `sec-default`'s forwarded list |
   | Posture self-check (`session.start`, `$.settings.read`) | Yes |
-  | Invisible-Unicode/bidi/ANSI scrubber | Yes for the sites this bundle wires it into (`tool.call`, `tool.describe`, `session.receive`, and the detection on `prompt.submit` and `session.send`); a future screen of `skill.prompt`/`prompt.context` content would need the seat below |
-  | Any future `skill.prompt` or `prompt.context`/`prompt.section` screen (not built in this bundle) | **No** -- needs this mod named in managed `prependPlugins` ahead of `sec-default@builtin`, or `sec-default` forwards that content past the user tier before this mod ever sees it |
+  | Invisible-Unicode/bidi/ANSI scrubber | Yes for the sites this bundle wires it into (`tool.call`, `tool.describe`, `session.receive`, the skill listing on `prompt.attachment`, and the detection on `prompt.submit` and `session.send`); the skill body on `skill.prompt` is covered only in the org seat below |
+  | Skill-body screen and redaction (`skill.prompt`) | **No** -- needs this mod named in managed `prependPlugins` ahead of `sec-default@builtin`. `sec-default` forwards `skill.prompt` past the user tier, so without that seat this mod never sees a skill body, and the screen does not fire |
+  | Any future `prompt.context`/`prompt.section` screen (not built in this bundle) | **No** -- the same seat requirement, for the same reason |
 
 - **Fail closed, with a 1-second budget.** Every hook that can deny/consume/withhold has a `.catch` that does so on failure (`next.error.kind` names whether it was a throw or a timeout). Purely advisory hooks (SAST's inline findings, the HUD) have none, so the documented no-`.catch` default applies: a pre-`next()` failure skips the hook silently (the action proceeds without the annotation), a post-`next()` failure leaves the result as `next()` produced it. Neither path can loosen a decision this mod or anything upstream of it already made.
 - **Never looser than decided.** Nothing in this mod uses `tool.check`. Every guard acts on `tool.call` with `{deny}`, which is unspoofable and runs before the permission check — not `tool.check`'s `ask`, which [in auto mode reaches the server-side classifier, not a human](https://code.claude.com/docs/en/plugins/mods/events#approve-or-refuse-a-tool-call-before-the-user-is-asked). A guard here only ever adds a deny/consume/withhold on top of whatever the permission rules, settings hooks, and mode already decided; it never answers `allow`.
