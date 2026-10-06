@@ -825,13 +825,11 @@ async function skillPromptCatch($: any, e: any, next: any) {
   return { skill: e.skill, text: skillBodyWithheldText('the skill screen failed (' + next.error.kind + ')') }
 }
 
-// prompt.attachment carries every attachment type, so the type check runs
-// before anything else and every other attachment passes straight through.
 // A skill listing is `prompt.attachment{type:'skill_listing', text}`, one per
-// session and one per spawned subagent. The dispatcher honours a rewritten
-// `text` and rejects a change to `type`, `origin`, `agentId` or `detail`.
+// session and one per spawned subagent. The hook is registered for that type
+// only, so other attachments never reach it or its catch. The dispatcher honours
+// a rewritten `text` and rejects a change to `type`, `origin`, `agentId` or `detail`.
 async function skillListingHook($: any, e: any, next: any) {
-  if (e.type !== 'skill_listing') return next(e)
   const current = await next(e)
   const text = typeof current?.text === 'string' ? current.text : e.text
   if (typeof text !== 'string') return current ?? e
@@ -843,7 +841,6 @@ async function skillListingHook($: any, e: any, next: any) {
 }
 
 async function skillListingCatch($: any, e: any, next: any) {
-  if (e?.type !== 'skill_listing') return e
   return { ...e, text: skillListingWithheldText('the listing screen failed (' + next.error.kind + ')') }
 }
 
@@ -851,8 +848,8 @@ async function skillListingCatch($: any, e: any, next: any) {
 // right: its body is screened by skillPromptHook, and the load taints the
 // session so later outward-effect Bash and further skill loads are held until
 // the user's next message. The taint is reserved before the load runs, so
-// concurrent calls serialise on it; a load that is denied, returns an error or
-// throws releases the reservation.
+// concurrent calls serialise on it, and the reservation stays on failure or
+// denial, so a failed or denied load leaves the session tainted.
 async function skillToolGuardHook($: any, e: any, next: any) {
   const name = typeof e.skill === 'string' ? e.skill : 'unnamed'
   const standing = await reserveSkillLoad($, 'skill "' + name + '" was loaded')
@@ -981,7 +978,7 @@ export function register(on: any, options: Record<string, unknown>) {
   on('tool.call', { tool: 'Skill' }, skillToolGuardHook).catch(skillToolGuardCatch)
 
   on('skill.prompt', skillPromptHook).catch(skillPromptCatch)
-  on('prompt.attachment', skillListingHook).catch(skillListingCatch)
+  on('prompt.attachment', { type: 'skill_listing' }, skillListingHook).catch(skillListingCatch)
 
   on('session.receive', sessionReceiveHook).catch(sessionReceiveCatch)
   on('session.send', sessionSendHook).catch(sessionSendCatch)
