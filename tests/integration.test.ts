@@ -305,17 +305,15 @@ test('two Skill calls dispatched together load at most one skill', async ($, on)
   expect(outs.filter((out) => out.deny).length).toBe(1)
 })
 
-test('a Skill load that returns an error does not taint the session', async ($, on) => {
-  let fail = true
-  on('tool.call', () => (fail ? { isError: true, result: 'boom' } : { result: 'loaded' }))
+test('a Skill load that returns an error still taints the session', async ($, on) => {
+  on('tool.call', () => ({ isError: true, result: 'boom' }))
   const first = await $.tool.call({ tool: 'Skill', skill: 'lint' })
   expect(first.isError).toBe(true)
-  fail = false
   const second = await $.tool.call({ tool: 'Skill', skill: 'dataviz' })
-  expect(second.deny).toBeUndefined()
+  expect(second.deny).toContain('loading a skill is blocked')
 })
 
-test('a taint from a fetched page during a failed Skill load survives the failure', async ($, on) => {
+test('a taint from a fetched page during a failed Skill load is still held', async ($, on) => {
   let finishLoad: () => void = () => {}
   const loadDone = new Promise<void>((resolve) => {
     finishLoad = resolve
