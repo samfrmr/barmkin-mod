@@ -8,6 +8,11 @@ declare module 'claude-code' {
       // above the injection threshold. Cleared on the next real user prompt.
       tainted: boolean
       taintReason: string | null
+      // Owner of the current taint: the token of the last mark, so a failed
+      // Skill load clears only a taint it still owns. taintSeq is the counter
+      // the tokens come from.
+      taintToken: number | null
+      taintSeq: number
 
       // Last Jev System One verdict, for the explanation surface (HUD band
       // and $.ui.notice under the permission dialog).

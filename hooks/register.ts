@@ -72,6 +72,8 @@ interface SastEntry {
 
 const tainted = atom({ plugin: 'barmkin-mod', key: 'tainted' }, false)
 const taintReason = atom({ plugin: 'barmkin-mod', key: 'taintReason' }, null as string | null)
+const taintToken = atom({ plugin: 'barmkin-mod', key: 'taintToken' }, null as number | null)
+const taintSeq = atom({ plugin: 'barmkin-mod', key: 'taintSeq' }, 0)
 const lastVerdict = atom({ plugin: 'barmkin-mod', key: 'lastVerdict' }, null as Verdict | null)
 const breakerOpenUntil = atom({ plugin: 'barmkin-mod', key: 'breakerOpenUntil' }, 0)
 const breakerFailureCount = atom({ plugin: 'barmkin-mod', key: 'breakerFailureCount' }, 0)
@@ -212,11 +214,22 @@ function serializeTaintWrite<T>(write: () => Promise<T>): Promise<T> {
   return run
 }
 
-function markTainted($: any, reason: string): Promise<void> {
-  return serializeTaintWrite(async () => {
-    await update($, tainted, () => true)
-    await update($, taintReason, (current: string | null) => current ?? reason)
+// Every taint mark gets a fresh owner token and becomes the owner. The reason
+// keeps the first recorded value, so the deny message shows the earliest evidence.
+async function writeTaint($: any, reason: string): Promise<number> {
+  let token = 0
+  await update($, taintSeq, (current: number) => {
+    token = current + 1
+    return token
   })
+  await update($, tainted, () => true)
+  await update($, taintReason, (current: string | null) => current ?? reason)
+  await update($, taintToken, () => token)
+  return token
+}
+
+function markTainted($: any, reason: string): Promise<number> {
+  return serializeTaintWrite(() => writeTaint($, reason))
 }
 
 async function readTaint($: any): Promise<{ tainted: boolean; reason: string | null }> {
@@ -224,23 +237,33 @@ async function readTaint($: any): Promise<{ tainted: boolean; reason: string | n
   return { tainted: await read($, tainted), reason: await read($, taintReason) }
 }
 
-function clearTaint($: any): Promise<void> {
+// Clears the taint only while `token` still owns it. A taint marked after the
+// reservation took ownership, so its owner keeps the taint on a failed load.
+function releaseTaint($: any, token: number): Promise<void> {
   return serializeTaintWrite(async () => {
+    let owned = false
+    await update($, taintToken, (current: number | null) => {
+      owned = current === token
+      return owned ? null : current
+    })
+    if (!owned) return
     await update($, tainted, () => false)
     await update($, taintReason, () => null)
+    await update($, taintToken, () => null)
   })
 }
 
 // Checks and reserves the taint in one queued write, so two Skill calls
 // dispatched together cannot both see an untainted session. Returns the
-// standing taint when the session is already tainted (the load is denied),
-// or null once this load holds the reservation.
-function reserveSkillLoad($: any, loadReason: string): Promise<{ reason: string | null } | null> {
+// standing reason when the session is already tainted (the load is denied),
+// or the owner token once this load holds the reservation.
+function reserveSkillLoad(
+  $: any,
+  loadReason: string,
+): Promise<{ token: number } | { standingReason: string | null }> {
   return serializeTaintWrite(async () => {
-    if (await read($, tainted)) return { reason: await read($, taintReason) }
-    await update($, tainted, () => true)
-    await update($, taintReason, () => loadReason)
-    return null
+    if (await read($, tainted)) return { standingReason: await read($, taintReason) }
+    return { token: await writeTaint($, loadReason) }
   })
 }
 
@@ -400,7 +423,11 @@ async function sessionStartHook($: any, e: any, next: any) {
 // ---------------------------------------------------------------------------
 
 async function promptSubmitHook($: any, e: any, next: any) {
-  await clearTaint($)
+  await serializeTaintWrite(async () => {
+    await update($, tainted, () => false)
+    await update($, taintReason, () => null)
+    await update($, taintToken, () => null)
+  })
 
   if (typeof e.text !== 'string') return next(e)
   if (exceedsScanLimit(e.text)) {
@@ -853,12 +880,12 @@ async function skillListingCatch($: any, e: any, next: any) {
 // throws releases the reservation.
 async function skillToolGuardHook($: any, e: any, next: any) {
   const name = typeof e.skill === 'string' ? e.skill : 'unnamed'
-  const standing = await reserveSkillLoad($, 'skill "' + name + '" was loaded')
-  if (standing) {
+  const reservation = await reserveSkillLoad($, 'skill "' + name + '" was loaded')
+  if ('standingReason' in reservation) {
     return {
       deny:
         'barmkin-mod: loading a skill is blocked while this session is handling untrusted content (' +
-        (standing.reason ?? 'unspecified') +
+        (reservation.standingReason ?? 'unspecified') +
         '). Ask again after a new message.',
     }
   }
@@ -866,10 +893,10 @@ async function skillToolGuardHook($: any, e: any, next: any) {
   try {
     result = await next(e)
   } catch (error) {
-    await clearTaint($)
+    await releaseTaint($, reservation.token)
     throw error
   }
-  if (!result || result.deny || result.isError) await clearTaint($)
+  if (!result || result.deny || result.isError) await releaseTaint($, reservation.token)
   return result
 }
 
