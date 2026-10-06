@@ -805,6 +805,7 @@ async function skillPromptHook($: any, e: any, next: any) {
   const text = typeof current?.text === 'string' ? current.text : e.text
   if (typeof text !== 'string') return current ?? e
 
+  void taintForScrub($, scrubInvisible(text).hiddenCount, 'a skill body')
   const verdict = await screenContent($, text, 'skill:' + e.skill, undefined)
   if (verdict.decision === 'deny') {
     return { ...(current ?? e), text: skillBodyWithheldText(verdict.reason) }

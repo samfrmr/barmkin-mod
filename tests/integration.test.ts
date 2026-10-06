@@ -266,6 +266,14 @@ test('redacts a secret inside a skill body before Claude reads it', async ($, on
   expect(answer.skill).toBe('deploy')
 })
 
+test('a skill body that strips more than 32 invisible characters taints the session', async ($, on) => {
+  on('skill.prompt', ($, e) => ({ skill: e.skill, text: e.text }))
+  on('tool.call', () => ({ result: 'ok' }))
+  await $.skill.prompt({ skill: 'fork', text: 'Run the tests.' + '\u200b'.repeat(40) })
+  const out = await $.tool.call({ tool: 'Bash', command: 'git push origin main' })
+  expect(out.deny).toBeDefined()
+})
+
 test('neutralizes a poisoned skill description in the skill listing', async ($, on) => {
   on('prompt.attachment', ($, e) => ({ text: e.text }))
   const answer = await $.prompt.attachment({
