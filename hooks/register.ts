@@ -224,6 +224,26 @@ async function readTaint($: any): Promise<{ tainted: boolean; reason: string | n
   return { tainted: await read($, tainted), reason: await read($, taintReason) }
 }
 
+function clearTaint($: any): Promise<void> {
+  return serializeTaintWrite(async () => {
+    await update($, tainted, () => false)
+    await update($, taintReason, () => null)
+  })
+}
+
+// Checks and reserves the taint in one queued write, so two Skill calls
+// dispatched together cannot both see an untainted session. Returns the
+// standing taint when the session is already tainted (the load is denied),
+// or null once this load holds the reservation.
+function reserveSkillLoad($: any, loadReason: string): Promise<{ reason: string | null } | null> {
+  return serializeTaintWrite(async () => {
+    if (await read($, tainted)) return { reason: await read($, taintReason) }
+    await update($, tainted, () => true)
+    await update($, taintReason, () => loadReason)
+    return null
+  })
+}
+
 // Shared by every scrubInvisible call site (the outermost redaction pass, tool.describe,
 // and session.receive): taints the session when a scrub stripped more than
 // INVISIBLE_CHAR_TAINT_THRESHOLD characters.
@@ -380,10 +400,7 @@ async function sessionStartHook($: any, e: any, next: any) {
 // ---------------------------------------------------------------------------
 
 async function promptSubmitHook($: any, e: any, next: any) {
-  await serializeTaintWrite(async () => {
-    await update($, tainted, () => false)
-    await update($, taintReason, () => null)
-  })
+  await clearTaint($)
 
   if (typeof e.text !== 'string') return next(e)
   if (exceedsScanLimit(e.text)) {
@@ -787,9 +804,6 @@ async function skillPromptHook($: any, e: any, next: any) {
   const text = typeof current?.text === 'string' ? current.text : e.text
   if (typeof text !== 'string') return current ?? e
 
-  const scrubbed = scrubInvisible(text)
-  void taintForScrub($, scrubbed.hiddenCount, 'a skill body')
-
   const verdict = await screenContent($, text, 'skill:' + e.skill, undefined)
   if (verdict.decision === 'deny') {
     return { ...(current ?? e), text: skillBodyWithheldText(verdict.reason) }
@@ -821,11 +835,7 @@ async function skillListingHook($: any, e: any, next: any) {
   const text = typeof current?.text === 'string' ? current.text : e.text
   if (typeof text !== 'string') return current ?? e
 
-  const scrubbed = scrubInvisible(text)
-  void taintForScrub($, scrubbed.hiddenCount, 'the skill listing')
-
-  const { text: neutralized, flagged } = neutralizeSkillListing(scrubbed.text)
-  if (flagged) $.ui.log('barmkin-mod: flagged instruction-like text in the skill listing', { to: 'debug' })
+  const neutralized = neutralizeSkillListing(scrubInvisible(text).text)
   if (neutralized === text) return current ?? e
   return { ...(current ?? e), text: neutralized }
 }
@@ -836,24 +846,30 @@ async function skillListingCatch($: any, e: any, next: any) {
 }
 
 // Gates the Skill tool itself. A loaded skill is untrusted content in its own
-// right: its body is screened by skillPromptHook, and the invocation then taints
-// the session so later outward-effect Bash and further skill loads are held
-// until the user's next message. The taint is recorded after a successful load,
-// so a failed call does not taint.
+// right: its body is screened by skillPromptHook, and the load taints the
+// session so later outward-effect Bash and further skill loads are held until
+// the user's next message. The taint is reserved before the load runs, so
+// concurrent calls serialise on it; a load that is denied, returns an error or
+// throws releases the reservation.
 async function skillToolGuardHook($: any, e: any, next: any) {
-  const { tainted: isTainted, reason } = await readTaint($)
-  if (isTainted) {
+  const name = typeof e.skill === 'string' ? e.skill : 'unnamed'
+  const standing = await reserveSkillLoad($, 'skill "' + name + '" was loaded')
+  if (standing) {
     return {
       deny:
         'barmkin-mod: loading a skill is blocked while this session is handling untrusted content (' +
-        (reason ?? 'unspecified') +
+        (standing.reason ?? 'unspecified') +
         '). Ask again after a new message.',
     }
   }
-  const result = await next(e)
-  if (!result || result.deny || result.isError) return result
-  const name = typeof e.skill === 'string' ? e.skill : 'unnamed'
-  await markTainted($, 'skill "' + name + '" was loaded')
+  let result
+  try {
+    result = await next(e)
+  } catch (error) {
+    await clearTaint($)
+    throw error
+  }
+  if (!result || result.deny || result.isError) await clearTaint($)
   return result
 }
 

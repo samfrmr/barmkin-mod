@@ -16,25 +16,30 @@ export function skillListingWithheldText(reason: string): string {
   return 'barmkin-mod: withheld the skill listing (' + reason + '). Ask the user before retrying.'
 }
 
-// A listing line is `- <name>: <description>`. A name can itself hold a colon
+// A listing entry is `- <name>: <description>`. A name can itself hold a colon
 // (plugin skills are `plugin:skill`), so the split is on the first colon that
 // is followed by a space, which a name's own colon never is.
-const LISTING_LINE = /^(- .+?): (.*)$/
+const LISTING_ENTRY = /^- (.+?): ([\s\S]*)$/
 
-// Runs the MCP description neutraliser over every line of a skill listing.
-// A skill's description is the part after `name: `; any other line (the
-// header, a continuation line) is neutralised as a whole, so instruction text
-// cannot hide outside the expected shape. Sentences are stripped the same way
-// tool descriptions are, so a clean listing comes back byte-identical.
-export function neutralizeSkillListing(text: string): { text: string; flagged: boolean } {
-  let flagged = false
-  const lines = text.split('\n').map((line) => {
-    const match = LISTING_LINE.exec(line)
-    const description = match ? match[2] : line
-    const result = neutralizeDescription(description)
-    if (result.flagged) flagged = true
-    if (result.description === description) return line
-    return match ? match[1] + ': ' + result.description : result.description
-  })
-  return { text: lines.join('\n'), flagged }
+// An entry starts only at a line that is itself `- <name>: `. Any other line
+// is a continuation of the entry above it, so a description split across
+// lines is neutralised as one piece.
+const ENTRY_START = /\n(?=- [^\n]*?: )/
+
+// Runs the MCP description neutraliser over the name and the description of
+// every skill listing entry. Any other chunk (the header) is neutralised as a
+// whole, so instruction text cannot hide outside the expected shape. Sentences
+// are stripped the same way tool descriptions are, so a clean listing comes
+// back byte-identical.
+export function neutralizeSkillListing(text: string): string {
+  return text
+    .split(ENTRY_START)
+    .map((entry) => {
+      const match = LISTING_ENTRY.exec(entry)
+      if (!match) return neutralizeDescription(entry).description
+      const name = neutralizeDescription(match[1]).description
+      const description = neutralizeDescription(match[2]).description
+      return '- ' + name + ': ' + description
+    })
+    .join('\n')
 }

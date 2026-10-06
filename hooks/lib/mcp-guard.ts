@@ -26,18 +26,21 @@ export interface DescribeResult {
 // Strips sentences containing instruction-like phrases rather than the
 // whole description, so a legitimate tool whose description merely
 // mentions one risky word in passing still reads sensibly. Flag-only
-// phrases are reported in matchedPhrases but never removed.
+// phrases are reported in matchedPhrases but never removed. Phrases are
+// matched on a copy with every whitespace run collapsed to one space, so a
+// phrase split by a double space, a tab or a newline is still found.
 export function neutralizeDescription(description: string): DescribeResult {
   const sentences = description.split(/(?<=[.!?])\s+/)
   const matched: string[] = []
   let stripped = false
   const kept = sentences.filter((sentence) => {
-    if (INSTRUCTION_PHRASES.some((re) => re.test(sentence))) {
+    const flat = sentence.replace(/\s+/g, ' ')
+    if (INSTRUCTION_PHRASES.some((re) => re.test(flat))) {
       matched.push(sentence.trim())
       stripped = true
       return false
     }
-    if (FLAG_ONLY_PHRASES.some((re) => re.test(sentence))) matched.push(sentence.trim())
+    if (FLAG_ONLY_PHRASES.some((re) => re.test(flat))) matched.push(sentence.trim())
     return true
   })
   const flagged = matched.length > 0
