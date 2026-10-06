@@ -28,13 +28,13 @@ const ENTRY_START = /\n(?=- )/
 // Neutralises a skill listing. A name is never rewritten: an entry whose name
 // holds an instruction-like phrase is dropped, and the count of dropped entries
 // is returned. Each description is neutralised like an MCP tool description. The
-// descriptions are then checked again as one text, so a phrase that spans two
-// entries is caught too; when one is found, the whole listing is withheld. A
-// clean listing comes back byte-identical.
+// visible text of the kept entries (names and descriptions) is then checked as
+// one text, so a phrase that spans two entries is caught too; when one is found,
+// the whole listing is withheld. A clean listing comes back byte-identical.
 export function neutralizeSkillListing(text: string): { text: string; withheld: number } {
   const chunks = text.split(ENTRY_START)
   const pieces: string[] = []
-  const bodies: string[] = []
+  const visible: string[] = []
   let withheld = 0
   for (const chunk of chunks) {
     const match = LISTING_ENTRY.exec(chunk)
@@ -46,20 +46,17 @@ export function neutralizeSkillListing(text: string): { text: string; withheld: 
       }
       const neutralized = neutralizeDescription(description).description
       pieces.push('- ' + name + ': ' + neutralized)
-      bodies.push(neutralized)
+      visible.push(name + ' ' + neutralized)
       continue
     }
     const bullet = chunk.startsWith('- ') ? '- ' : ''
     const body = neutralizeDescription(chunk.slice(bullet.length)).description
     pieces.push(bullet + body)
-    bodies.push(body)
+    visible.push(body)
   }
-  const joined = bodies.join(' ')
+  const joined = visible.join(' ')
   if (neutralizeDescription(joined).description !== joined) {
-    return {
-      text: skillListingWithheldText('an instruction-like phrase runs across listing entries'),
-      withheld: chunks.filter((chunk) => chunk.startsWith('- ')).length,
-    }
+    return { text: skillListingWithheldText('an instruction-like phrase runs across listing entries'), withheld }
   }
   return { text: pieces.join('\n'), withheld }
 }
