@@ -862,7 +862,8 @@ async function skillListingHook($: any, e: any, next: any) {
   const text = typeof current?.text === 'string' ? current.text : e.text
   if (typeof text !== 'string') return current ?? e
 
-  const neutralized = neutralizeSkillListing(scrubInvisible(text).text)
+  const { text: neutralized, withheld } = neutralizeSkillListing(scrubInvisible(text).text)
+  if (withheld > 0) $.ui.log('barmkin-mod: withheld ' + withheld + ' skill listing entr' + (withheld === 1 ? 'y' : 'ies') + ' with instruction-like text', { to: 'debug' })
   if (neutralized === text) return current ?? e
   return { ...(current ?? e), text: neutralized }
 }
