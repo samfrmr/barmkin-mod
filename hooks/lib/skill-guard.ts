@@ -25,38 +25,51 @@ const LISTING_ENTRY = /^- (.+?): ([\s\S]*)$/
 // continuation of the chunk above it.
 const ENTRY_START = /\n(?=- )/
 
+// Sentence punctuation and any whitespace run become single spaces, so a phrase
+// is matched between its words whatever separates them.
+function flatten(text: string): string {
+  return text.replace(/[.!?]/g, ' ').replace(/\s+/g, ' ')
+}
+
+// Neutralises one description on its own, sentence by sentence, with the shared
+// matcher. A sentence that holds an instruction-like phrase is removed. The kept
+// sentences are checked again as one text, so a phrase that spans the sentences
+// of this description withholds the description. Nothing is checked across
+// entries.
+function neutralizeEntry(description: string): string {
+  const sentences = description.split(/(?<=[.!?])\s+/)
+  const kept = sentences.filter((sentence) => {
+    const flat = flatten(sentence)
+    return neutralizeDescription(flat).description === flat
+  })
+  const body = flatten(kept.join(' '))
+  const residual = neutralizeDescription(body).description
+  if (residual !== body) return residual
+  if (kept.length === sentences.length) return description
+  return kept.join(' ').trim() || neutralizeDescription(flatten(description)).description
+}
+
 // Neutralises a skill listing. A name is never rewritten: an entry whose name
-// holds an instruction-like phrase is dropped, and the count of dropped entries
-// is returned. Each description is neutralised like an MCP tool description. The
-// visible text of the kept entries (names and descriptions) is then checked as
-// one text, so a phrase that spans two entries is caught too; when one is found,
-// the whole listing is withheld. A clean listing comes back byte-identical.
+// holds an instruction-like phrase is not listed, and the number of such entries
+// is returned. Each remaining description is neutralised on its own. A clean
+// listing comes back byte-identical.
 export function neutralizeSkillListing(text: string): { text: string; withheld: number } {
-  const chunks = text.split(ENTRY_START)
   const pieces: string[] = []
-  const visible: string[] = []
   let withheld = 0
-  for (const chunk of chunks) {
+  for (const chunk of text.split(ENTRY_START)) {
     const match = LISTING_ENTRY.exec(chunk)
-    if (match) {
-      const [, name, description] = match
-      if (neutralizeDescription(name).description !== name) {
-        withheld++
-        continue
-      }
-      const neutralized = neutralizeDescription(description).description
-      pieces.push('- ' + name + ': ' + neutralized)
-      visible.push(name + ' ' + neutralized)
+    if (!match) {
+      const bullet = chunk.startsWith('- ') ? '- ' : ''
+      pieces.push(bullet + neutralizeEntry(chunk.slice(bullet.length)))
       continue
     }
-    const bullet = chunk.startsWith('- ') ? '- ' : ''
-    const body = neutralizeDescription(chunk.slice(bullet.length)).description
-    pieces.push(bullet + body)
-    visible.push(body)
-  }
-  const joined = visible.join(' ')
-  if (neutralizeDescription(joined).description !== joined) {
-    return { text: skillListingWithheldText('an instruction-like phrase runs across listing entries'), withheld }
+    const [, name, description] = match
+    const flatName = flatten(name)
+    if (neutralizeDescription(flatName).description !== flatName) {
+      withheld++
+      continue
+    }
+    pieces.push('- ' + name + ': ' + neutralizeEntry(description))
   }
   return { text: pieces.join('\n'), withheld }
 }
