@@ -27,14 +27,23 @@ export interface DescribeResult {
 // whole description, so a legitimate tool whose description merely
 // mentions one risky word in passing still reads sensibly. Flag-only
 // phrases are reported in matchedPhrases but never removed. Phrases are
-// matched on a copy with every whitespace run collapsed to one space, so a
-// phrase split by a double space, a tab or a newline is still found.
+// matched on a copy with sentence punctuation removed and every whitespace run
+// collapsed to one space, so a phrase split by a double space, a tab, a newline
+// or a full stop is still found. A phrase that still matches once the kept
+// sentences are joined (one split across a sentence boundary) withholds the
+// whole description.
+const WITHHELD = '[barmkin-mod: description withheld, it read as instructions to the agent]'
+
+function flatten(text: string): string {
+  return text.replace(/[.!?]/g, ' ').replace(/\s+/g, ' ')
+}
+
 export function neutralizeDescription(description: string): DescribeResult {
   const sentences = description.split(/(?<=[.!?])\s+/)
   const matched: string[] = []
   let stripped = false
   const kept = sentences.filter((sentence) => {
-    const flat = sentence.replace(/\s+/g, ' ')
+    const flat = flatten(sentence)
     if (INSTRUCTION_PHRASES.some((re) => re.test(flat))) {
       matched.push(sentence.trim())
       stripped = true
@@ -43,10 +52,13 @@ export function neutralizeDescription(description: string): DescribeResult {
     if (FLAG_ONLY_PHRASES.some((re) => re.test(flat))) matched.push(sentence.trim())
     return true
   })
+  const body = kept.join(' ').trim()
+  const crossesSentences = INSTRUCTION_PHRASES.some((re) => re.test(flatten(body)))
+  if (crossesSentences) matched.push(description.trim())
   const flagged = matched.length > 0
-  const description_ = stripped
-    ? kept.join(' ').trim() || '[barmkin-mod: description withheld, it read as instructions to the agent]'
-    : description
+  let description_ = description
+  if (crossesSentences) description_ = WITHHELD
+  else if (stripped) description_ = body || WITHHELD
   return { description: description_, flagged, matchedPhrases: matched }
 }
 
