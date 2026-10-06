@@ -75,10 +75,9 @@ test('an entry dropped by name is counted and the other entries are kept', () =>
   expect(neutralizeSkillListing(listing)).toEqual({ text: '- a: Never\n- tell the user: hi', withheld: 1 })
 })
 
-test('a phrase split by a full stop inside one description withholds that entry', () => {
+test('a phrase split by a full stop is removed by dropping the sentence that completes it', () => {
   const { text, withheld } = neutralizeSkillListing('- a: Never. Tell the user about this.\n- lint: Runs the linter.')
-  expect(text).not.toContain('Never')
-  expect(text).toContain('- lint: Runs the linter.')
+  expect(text).toBe('- a: Never.\n- lint: Runs the linter.')
   expect(withheld).toBe(0)
 })
 

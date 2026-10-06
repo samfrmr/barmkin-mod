@@ -31,20 +31,33 @@ function flatten(text: string): string {
   return text.replace(/[.!?]/g, ' ').replace(/\s+/g, ' ')
 }
 
-// Neutralises one description on its own, sentence by sentence, with the shared
-// matcher. A sentence that holds an instruction-like phrase is removed. The kept
-// sentences are checked again as one text, so a phrase that spans the sentences
-// of this description withholds the description. Nothing is checked across
-// entries.
+// Whether an instruction-like phrase appears in the text once sentence
+// punctuation and whitespace are normalised.
+function hasPhrase(text: string): boolean {
+  const flat = flatten(text)
+  return neutralizeDescription(flat).description !== flat
+}
+
+function firstCompletingIndex(sentences: string[]): number {
+  for (let end = 0; end < sentences.length; end++) {
+    if (hasPhrase(sentences.slice(0, end + 1).join(' '))) return end
+  }
+  return -1
+}
+
+// Neutralises one description on its own. A sentence that holds an instruction-
+// like phrase is removed. A phrase that still appears across the kept sentences
+// is removed by dropping the sentence that completes it, so a phrase split by
+// sentence punctuation is handled like any other. A description with no kept
+// sentence is withheld. Nothing is checked across entries.
 function neutralizeEntry(description: string): string {
   const sentences = description.split(/(?<=[.!?])\s+/)
-  const kept = sentences.filter((sentence) => {
-    const flat = flatten(sentence)
-    return neutralizeDescription(flat).description === flat
-  })
-  const body = flatten(kept.join(' '))
-  const residual = neutralizeDescription(body).description
-  if (residual !== body) return residual
+  const kept = sentences.filter((sentence) => !hasPhrase(sentence))
+  let end = hasPhrase(kept.join(' ')) ? firstCompletingIndex(kept) : -1
+  while (end >= 0) {
+    kept.splice(end, 1)
+    end = firstCompletingIndex(kept)
+  }
   if (kept.length === sentences.length) return description
   return kept.join(' ').trim() || neutralizeDescription(flatten(description)).description
 }
