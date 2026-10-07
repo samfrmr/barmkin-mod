@@ -2,7 +2,7 @@
   "name": "barmkin-mod",
   "displayName": "Barmkin Mod",
   "version": "0.1.0",
-  "description": "Claude Code mods security layer: secret redaction, untrusted-content taint, MCP tool-poisoning guard, skill-content screen, agent-to-agent firewall, SAST findings UI, and a Jev System One classifier gateway with an explanation surface.",
+  "description": "Claude Code mods security layer: secret redaction, untrusted-content taint with a Rule-of-Two egress gate, skill inline-shell mediation guard, MCP tool-poisoning guard, skill-content screen, agent-to-agent firewall, SAST findings UI, and a Jev System One classifier gateway with an explanation surface.",
   "author": { "name": "samfrmr" },
   "repository": "https://github.com/samfrmr/barmkin-mod",
   "license": "MIT",
@@ -36,6 +36,12 @@
       "type": "boolean",
       "title": "Hold on high-severity SAST findings",
       "description": "When a semgrep ERROR-severity finding appears after an edit, ask the user to acknowledge it before the turn continues. When off, findings are advisory only (shown inline and fed to Claude as context).",
+      "default": false
+    },
+    "sdk_prompts_clear_taint": {
+      "type": "boolean",
+      "title": "Let SDK prompts clear the taint",
+      "description": "By default only a prompt a person sent (terminal composer or Remote Control bridge) clears the untrusted-content taint and the sensitive-access flag. Turn this on for a headless lane (claude -p, the Agent SDK), where every prompt has the sdk origin and a person is not at a terminal.",
       "default": false
     },
     "sast_semgrep_path": {
