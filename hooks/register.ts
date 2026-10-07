@@ -31,10 +31,17 @@ import {
   composeScreen,
   isOutsideCwd,
   heuristicInjectionScore,
-  promptClearsTaint,
+  parseTaintClearPosture,
+  promptClearsTaintUnder,
+  compactClearsTaint,
+  sessionEndClearsTaint,
+  commandMayClearTaint,
+  describeTaintClear,
   UNTRUSTED_CONTENT_WARNING,
+  type HeldTaint,
   type ScoreSource,
   type ScreenOutcome,
+  type TaintClearPosture,
 } from './lib/taint'
 import {
   classifyEgress,
@@ -246,6 +253,30 @@ async function readTaint($: any): Promise<{ tainted: boolean; reason: string | n
   return { tainted: await read($, tainted), reason: await read($, taintReason) }
 }
 
+// Clears both legs (taint and sensitive access) in one queued write and
+// returns what they held. Every clearing path goes through here: a human
+// prompt in human-origin posture, a compaction or /clear in sticky posture,
+// and /barmkin-mod-clear-taint in either.
+function clearTaintLegs($: any): Promise<HeldTaint> {
+  return serializeTaintWrite(async () => {
+    const held: HeldTaint = {
+      tainted: await read($, tainted),
+      taintReason: await read($, taintReason),
+      sensitive: await read($, sensitiveAccess),
+      sensitiveReason: await read($, sensitiveReason),
+    }
+    await update($, tainted, () => false)
+    await update($, taintReason, () => null)
+    await update($, sensitiveAccess, () => false)
+    await update($, sensitiveReason, () => null)
+    return held
+  })
+}
+
+function taintClearPosture(): TaintClearPosture {
+  return parseTaintClearPosture(pluginOptions.taint_clear)
+}
+
 // Leg B of the trifecta. Written through the same queue as the taint so a
 // human prompt's reset cannot interleave with it. The first reason recorded
 // for a session wins, as it does for the taint.
@@ -453,6 +484,10 @@ async function sessionStartHook($: any, e: any, next: any) {
   try {
     await $.command.register({ name: 'barmkin-mod-findings', description: 'Open the barmkin-mod SAST findings pane' })
     await $.command.register({ name: 'barmkin-mod-status', description: 'Show barmkin-mod taint, breaker, and last classifier verdict' })
+    await $.command.register({
+      name: 'barmkin-mod-clear-taint',
+      description: 'Clear the barmkin-mod taint and sensitive-access flags and re-enable egress',
+    })
   } catch {
     // a command name collided with another plugin; the mod still works
   }
@@ -464,15 +499,11 @@ async function sessionStartHook($: any, e: any, next: any) {
 // ---------------------------------------------------------------------------
 
 async function promptSubmitHook($: any, e: any, next: any) {
-  // Only a person's prompt clears the taint and the sensitive-access leg: the
-  // composer or the bridge, plus an SDK prompt when the headless-lane option is on.
-  if (promptClearsTaint(e.origin, pluginOptions.sdk_prompts_clear_taint === true)) {
-    await serializeTaintWrite(async () => {
-      await update($, tainted, () => false)
-      await update($, taintReason, () => null)
-      await update($, sensitiveAccess, () => false)
-      await update($, sensitiveReason, () => null)
-    })
+  // In human-origin posture only a person's prompt clears the taint and the
+  // sensitive-access leg: the composer or the bridge, plus an SDK prompt when
+  // the headless-lane option is on. In sticky posture no prompt clears them.
+  if (promptClearsTaintUnder(taintClearPosture(), e.origin, pluginOptions.sdk_prompts_clear_taint === true)) {
+    await clearTaintLegs($)
   }
 
   if (typeof e.text !== 'string') return next(e)
@@ -487,6 +518,23 @@ async function promptSubmitHook($: any, e: any, next: any) {
   }
   $.ui.log('barmkin-mod: redacted ' + redactedCount + ' likely secret(s) from your message before sending it')
   return next({ ...e, text })
+}
+
+// ---------------------------------------------------------------------------
+// Sticky taint: the events that break the context the taint guards. Both only
+// clear in sticky posture, and both only ever clear after the event stood, so
+// a hook that fails leaves the taint held.
+// ---------------------------------------------------------------------------
+
+async function compactHook($: any, e: any, next: any) {
+  const result = await next(e)
+  if (taintClearPosture() === 'sticky' && compactClearsTaint(e.trigger, e.agentId, result)) await clearTaintLegs($)
+  return result
+}
+
+async function sessionEndHook($: any, e: any, next: any) {
+  if (taintClearPosture() === 'sticky' && sessionEndClearsTaint(e.reason)) await clearTaintLegs($)
+  return next(e)
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,6 +1106,14 @@ async function findingsCommandHook($: any) {
   return {}
 }
 
+async function clearTaintCommandHook($: any, e: any) {
+  const posture = taintClearPosture()
+  if (!commandMayClearTaint(e.origin, pluginOptions.sdk_prompts_clear_taint === true)) {
+    return { text: 'barmkin-mod: taint posture is ' + posture + '; /barmkin-mod-clear-taint was not run from a person\'s prompt, so nothing was cleared.' }
+  }
+  return { text: describeTaintClear(posture, await clearTaintLegs($)) }
+}
+
 async function statusCommandHook($: any) {
   const { tainted: isTainted, reason } = await readTaint($)
   const isSensitive = await read($, sensitiveAccess)
@@ -1067,6 +1123,7 @@ async function statusCommandHook($: any) {
   const breakerUntil = await read($, breakerOpenUntil)
   const lines = [
     'barmkin-mod status',
+    'taint clear posture: ' + taintClearPosture(),
     'taint: ' + (isTainted ? 'ON (' + (reason ?? 'unspecified') + ')' : 'off'),
     'sensitive access: ' + (isSensitive ? 'ON (' + (sensitiveWhy ?? 'unspecified') + ')' : 'off'),
     'egress: ' +
@@ -1091,6 +1148,8 @@ export function register(on: any, options: Record<string, unknown>) {
 
   on('session.start', sessionStartHook)
   on('prompt.submit', promptSubmitHook)
+  on('session.compact', compactHook)
+  on('session.end', sessionEndHook)
   on('tool.describe', { tool: /^mcp__/ }, toolDescribeHook)
 
   on('tool.call', redactionHook).catch(redactionCatch)
@@ -1113,4 +1172,5 @@ export function register(on: any, options: Record<string, unknown>) {
   on('ui.render', { component: 'AbovePrompt' }, hudHook)
   on('command.run', { command: 'barmkin-mod-findings' }, findingsCommandHook)
   on('command.run', { command: 'barmkin-mod-status' }, statusCommandHook)
+  on('command.run', { command: 'barmkin-mod-clear-taint' }, clearTaintCommandHook)
 }

@@ -592,3 +592,139 @@ test('a prompt that does not clear the taint is still redacted', async ($, on) =
   const answer = await $.prompt.submit({ text: 'my key is sk-ABCDEFGHIJ1234567890', origin: { kind: 'sdk' } })
   expect(answer.text).not.toContain('sk-ABCDEFGHIJ1234567890')
 })
+
+// ---------------------------------------------------------------------------
+// Sticky taint posture and /barmkin-mod-clear-taint.
+// ---------------------------------------------------------------------------
+
+const STICKY = { options: { taint_clear: 'sticky' } }
+
+const gitPushDenied = async ($: any) => (await $.tool.call({ tool: 'Bash', command: 'git push origin main' })).deny !== undefined
+
+test('sticky: a prompt from the composer or the bridge does not clear the taint or the sensitive-access leg', STICKY, async ($, on) => {
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await taintViaFetch($, on)
+  await $.tool.call({ tool: 'Read', file_path: '/proj/.env' })
+  for (const origin of [{ kind: 'composer' }, { kind: 'bridge' }]) {
+    await $.prompt.submit({ text: 'continue', origin })
+    expect(await gitPushDenied($)).toBe(true)
+    expect((await $.tool.call({ tool: 'Write', file_path: '/proj/CLAUDE.md', content: 'x' })).deny).toBeDefined()
+  }
+  const status = await $.command.run({ command: 'barmkin-mod-status', args: '' })
+  expect(status.text).toContain('taint: ON')
+  expect(status.text).toContain('sensitive access: ON')
+  expect(status.text).toContain('taint clear posture: sticky')
+})
+
+test('sticky: an sdk prompt does not clear the taint, with or without sdk_prompts_clear_taint', STICKY, async ($, on) => {
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await taintViaFetch($, on)
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'sdk' } })
+  expect(await gitPushDenied($)).toBe(true)
+})
+
+test(
+  'sticky: sdk_prompts_clear_taint does not let an sdk prompt clear the taint',
+  { options: { taint_clear: 'sticky', sdk_prompts_clear_taint: true } },
+  async ($, on) => {
+    on('prompt.submit', ($, e) => ({ text: e.text }))
+    await taintViaFetch($, on)
+    await $.prompt.submit({ text: 'continue', origin: { kind: 'sdk' } })
+    expect(await gitPushDenied($)).toBe(true)
+  },
+)
+
+test('sticky: a prompt that does not clear the taint is still redacted', STICKY, async ($, on) => {
+  on('ui.log', () => ({ value: undefined }))
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  const answer = await $.prompt.submit({ text: 'my key is sk-ABCDEFGHIJ1234567890', origin: { kind: 'composer' } })
+  expect(answer.text).not.toContain('sk-ABCDEFGHIJ1234567890')
+})
+
+test('default posture is human-origin: a composer prompt still clears, and status names the posture', async ($, on) => {
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await taintViaFetch($, on)
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' } })
+  expect(await gitPushDenied($)).toBe(false)
+  const status = await $.command.run({ command: 'barmkin-mod-status', args: '' })
+  expect(status.text).toContain('taint clear posture: human-origin')
+})
+
+test('an unrecognized taint_clear value falls back to human-origin', { options: { taint_clear: 'bogus' } }, async ($, on) => {
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await taintViaFetch($, on)
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' } })
+  expect(await gitPushDenied($)).toBe(false)
+})
+
+test('/barmkin-mod-clear-taint clears both legs in sticky posture and says so in one line', STICKY, async ($, on) => {
+  await taintViaFetch($, on)
+  await $.tool.call({ tool: 'Read', file_path: '/proj/.env' })
+  expect(await gitPushDenied($)).toBe(true)
+  const answer = await $.command.run({ command: 'barmkin-mod-clear-taint', args: '' })
+  expect(answer.text.split('\n')).toHaveLength(1)
+  expect(answer.text).toContain('taint posture was sticky')
+  expect(answer.text).toContain('cleared taint')
+  expect(answer.text).toContain('sensitive access')
+  expect(answer.text).toContain('egress is re-enabled')
+  expect(await gitPushDenied($)).toBe(false)
+  expect((await $.tool.call({ tool: 'Write', file_path: '/proj/CLAUDE.md', content: 'x' })).deny).toBeUndefined()
+  const status = await $.command.run({ command: 'barmkin-mod-status', args: '' })
+  expect(status.text).toContain('taint: off')
+  expect(status.text).toContain('sensitive access: off')
+})
+
+test('/barmkin-mod-clear-taint clears both legs in the default human-origin posture', async ($, on) => {
+  await taintViaFetch($, on)
+  await $.tool.call({ tool: 'Read', file_path: '/proj/.env' })
+  expect(await gitPushDenied($)).toBe(true)
+  const answer = await $.command.run({ command: 'barmkin-mod-clear-taint', args: '' })
+  expect(answer.text).toContain('taint posture was human-origin')
+  expect(answer.text).toContain('egress is re-enabled')
+  expect(await gitPushDenied($)).toBe(false)
+})
+
+test('/barmkin-mod-clear-taint is a stated no-op on a clean human-origin session', async ($, on) => {
+  on('tool.call', () => ({ result: 'ok' }))
+  const answer = await $.command.run({ command: 'barmkin-mod-clear-taint', args: '' })
+  expect(answer.text).toContain('taint posture was human-origin')
+  expect(answer.text).toContain('nothing was held')
+  expect(await gitPushDenied($)).toBe(false)
+})
+
+test('/barmkin-mod-clear-taint is a stated no-op on a clean sticky session', STICKY, async ($, on) => {
+  const answer = await $.command.run({ command: 'barmkin-mod-clear-taint', args: '' })
+  expect(answer.text).toContain('taint posture was sticky')
+  expect(answer.text).toContain('nothing was held')
+})
+
+// Not covered here: a standing `session.compact`. The test kit hands plugin
+// hooks no transcript (`e.messages` is undefined and the hook is skipped before
+// it runs), so a compaction cannot be driven through the registered hook; the
+// decision it makes is covered by compactClearsTaint in tests/taint.test.ts.
+
+const SESSION_END_BOTTOM = ($: any, e: any) => ({ sessionId: e.sessionId })
+
+test('sticky: a /clear (session.end with reason clear) clears the taint', STICKY, async ($, on) => {
+  on('session.end', SESSION_END_BOTTOM)
+  await taintViaFetch($, on)
+  await $.tool.call({ tool: 'Read', file_path: '/proj/.env' })
+  expect(await gitPushDenied($)).toBe(true)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} })
+  expect(await gitPushDenied($)).toBe(false)
+  expect((await $.tool.call({ tool: 'Write', file_path: '/proj/CLAUDE.md', content: 'x' })).deny).toBeUndefined()
+})
+
+test('sticky: a session.end that is not a /clear leaves the taint held', STICKY, async ($, on) => {
+  on('session.end', SESSION_END_BOTTOM)
+  await taintViaFetch($, on)
+  await $.session.end({ reason: 'resume', sessionId: 's1', resume: {} })
+  expect(await gitPushDenied($)).toBe(true)
+})
+
+test('human-origin: session.end with reason clear does not touch the taint', async ($, on) => {
+  on('session.end', SESSION_END_BOTTOM)
+  await taintViaFetch($, on)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} })
+  expect(await gitPushDenied($)).toBe(true)
+})

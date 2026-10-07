@@ -18,7 +18,7 @@ CI validates against Claude Code 2.1.287+ because the sandbox this plugin was de
 | # | Capability | Hooks |
 |---|---|---|
 | 1 | Secret redaction | `tool.call` (outermost, all tools), `prompt.submit` |
-| 2 | Untrusted-content taint + injection screen | `tool.call` on WebFetch/WebSearch/`mcp__*`/Read-outside-cwd, `prompt.submit` (clears taint for a human-origin prompt) |
+| 2 | Untrusted-content taint + injection screen | `tool.call` on WebFetch/WebSearch/`mcp__*`/Read-outside-cwd, `prompt.submit` (clears taint for a human-origin prompt), `session.compact` and `session.end` (clear it in sticky posture), `/barmkin-mod-clear-taint` |
 | 3 | MCP tool-poisoning guard | `tool.describe` (neutralize instruction-like text), `tool.call` on `mcp__*` (per-server allowlist) |
 | 4 | Agent-to-agent firewall | `session.receive` (screen + consume), `session.send` (secret DLP), `agent.spawn` (deny while tainted) |
 | 5 | SAST UI (semgrep) | `tool.call` on Edit/Write/MultiEdit/NotebookEdit, a findings pane, inline context feedback, optional hold on high severity |
@@ -54,9 +54,24 @@ Every string inside the result is rewritten in place, whatever its shape: a plai
 
 While the session is tainted, the egress gate (next section) denies or warns on calls that could carry data or instructions outward, with `{deny}` — never a `tool.check` `ask`, because [a mod's `ask` in auto mode reaches the auto-mode classifier, not a human](https://code.claude.com/docs/en/plugins/mods/events#approve-or-refuse-a-tool-call-before-the-user-is-asked).
 
-**Taint clears only on a prompt a person sent.** `prompt.submit` carries an `origin`. The taint, and the sensitive-access flag below, clear only when `origin.kind` is `composer` (typed at the terminal) or `bridge` (Remote Control, a phone or web client), the same two kinds Anthropic's own `claude-test` mod treats as human. An `sdk` prompt (`claude -p`, the Agent SDK), a task notification, a scheduled trigger, a peer or relay message, a channel message, an auto-continuation, an unclassified origin, or a missing origin does not clear it. A headless lane, where every prompt is `sdk`, can set `sdk_prompts_clear_taint` (default off) to let SDK prompts clear it; no other non-human origin is affected by that option. A prompt that does not clear the taint is still scanned and redacted as before.
+**In the default posture, taint clears only on a prompt a person sent.** `prompt.submit` carries an `origin`. The taint, and the sensitive-access flag below, clear only when `origin.kind` is `composer` (typed at the terminal) or `bridge` (Remote Control, a phone or web client), the same two kinds Anthropic's own `claude-test` mod treats as human. An `sdk` prompt (`claude -p`, the Agent SDK), a task notification, a scheduled trigger, a peer or relay message, a channel message, an auto-continuation, an unclassified origin, or a missing origin does not clear it. A headless lane, where every prompt is `sdk`, can set `sdk_prompts_clear_taint` (default off) to let SDK prompts clear it; no other non-human origin is affected by that option. A prompt that does not clear the taint is still scanned and redacted as before.
 
-Known limitation, and a possible follow-up: the taint is a flag, and the injected text stays in the context window after a human prompt clears it, so a bare "continue" re-enables egress while the payload is still in context. A sticky taint that holds until `/compact` or `/clear`, or an explicit clear command, is not built; it was left out deliberately and could be added later.
+#### Taint lifecycle: `taint_clear` posture
+
+The taint is a flag, but the injected text it guards against is not: it stays in the context window after the flag clears. In the default posture a human prompt clears the flag, so a bare "continue" re-enables egress while a malicious payload is still in context, and the model can act on it again. `taint_clear` selects how the flag clears:
+
+| Posture | What clears the taint and the sensitive-access flag |
+|---|---|
+| `human-origin` (default) | A prompt a person sent, as above. Unchanged from before this option existed. |
+| `sticky` | Only an event that breaks the context: a compaction, a `/clear`, or `/barmkin-mod-clear-taint`. No prompt clears anything, whatever its origin (`sdk_prompts_clear_taint` has no effect on prompts in this posture). |
+
+Sticky mechanisms:
+
+- **Compaction.** A `session.compact` hook runs `next(e)` and clears both legs only after it resolves to a compaction that stands: not a `precompute` (which installs nothing), not a subagent's or fork's own compaction (`agentId` set), and not a skipped one. `/compact`, the automatic threshold compaction and a plugin's compaction all clear. The summary replaces the transcript, so the payload is no longer there verbatim; the posture trusts that a summary does not carry it forward as instructions, which this mod cannot check.
+- **`/clear`.** A `session.end` hook with `reason: 'clear'` clears both legs. `/clear` fires `session.end` and no `session.start`. A fresh process starts untainted by construction. A `resume` or a quit does not clear: a resumed transcript is another conversation's context and may hold a payload of its own, and this mod does not try to recover taint from a transcript it has not screened.
+- **`/barmkin-mod-clear-taint`.** Clears the taint and the sensitive-access flag in either posture and prints one line naming the posture that was active, what was cleared and that egress is re-enabled, e.g. `barmkin-mod: taint posture was sticky; cleared taint (...) and sensitive access (...); egress is re-enabled.` When nothing is held it is a no-op that says so. It only runs from a person's prompt (the composer or the bridge, plus `sdk` when `sdk_prompts_clear_taint` is on) or a plugin's own `$.command.run`; from a peer, channel, task notification, scheduled trigger or any other origin it reports that nothing was cleared, so injected text cannot clear its own taint by invoking the command. Use it when you have read what happened and judge the context safe to continue from.
+
+`/barmkin-mod-status` shows the active posture. Default behavior is unchanged: a deployment that never sets `taint_clear` runs `human-origin`.
 
 ### Egress gate with Rule of Two
 
@@ -78,7 +93,7 @@ A `warn` lets the call run and appends a note to its result for Claude. The `Web
 - **B, sensitive access** (`sensitiveAccess`): a call named a credential path (`~/.ssh`, `~/.aws`, `~/.claude/.credentials.json`, `.env` and `.env.*` except `.example`/`.sample`/`.template`/`.dist`, `/proc/*/environ`, `.netrc`, `.git-credentials`, `gh`'s `hosts.yml`) in a Read or a shell command; a redaction rule fired on a tool result; or content scored on the credential-presence question.
 - **C, egress**: a call that matches a class above, evaluated per call.
 
-With A alone, each class keeps the posture in its row. With A and B both holding, every class denies, including one that would only warn on A alone, until a human-origin prompt clears both legs. B alone blocks nothing. `/barmkin-mod-status` and the HUD band show both legs and the last egress decision.
+With A alone, each class keeps the posture in its row. With A and B both holding, every class denies, including one that would only warn on A alone, until both legs clear (a human-origin prompt, or in sticky posture a compaction, `/clear` or `/barmkin-mod-clear-taint`). B alone blocks nothing. `/barmkin-mod-status` and the HUD band show both legs and the last egress decision.
 
 ### Skill inline-shell mediation guard
 
@@ -109,7 +124,7 @@ An ordinary inline command (`git status`, `gh pr diff 12`) is left to the permis
 
 `prompt.attachment` with `type: "skill_listing"` carries the skill listing. It fires once per session and once per spawned subagent. The hook is registered for that attachment type only. Each `- name: description` entry is split at every line that begins with a bullet, so a bullet-led continuation line is its own entry. A name is never rewritten: an entry whose name holds an instruction-like phrase is not listed at all, a deliberate product choice, and the count is logged at debug. Each description is neutralised on its own, with the same sentence-level stripping as tool descriptions. Sentence punctuation and whitespace are normalised before matching, so a phrase split by a full stop or a run of spaces is found. A phrase split by sentence punctuation is matched once the punctuation is normalised, and the sentence that completes it is removed; no whole description is withheld on punctuation. There is no matching across entries, so a phrase split between two entries is not caught. A skill name that contains a colon (a plugin skill's `plugin:skill`) is kept whole. The listing's invisible characters are stripped before neutralising, and they do not taint the session.
 
-`tool.call` on `Skill` denies a skill load while the session is tainted. The load is a taint source, recorded as `skill "<name>" was loaded` and reserved before the load runs, so a second skill load in the same turn is held regardless of dispatch order, including calls dispatched concurrently, and any outward-effect Bash command is held until a human-origin prompt. A load that is denied, returns an error or throws leaves the session tainted until a human-origin prompt: the reservation is not released, so a failed load is fail-closed. Known limitation: the taint's reason is the first one recorded, so when another source's taint lands during a load that then fails, the deny messages still name the failed skill. The taint is held, so this is a misattributed label only, not a bypass.
+`tool.call` on `Skill` denies a skill load while the session is tainted. The load is a taint source, recorded as `skill "<name>" was loaded` and reserved before the load runs, so a second skill load in the same turn is held regardless of dispatch order, including calls dispatched concurrently, and any outward-effect Bash command is held until the taint clears (a human-origin prompt, or in sticky posture a compaction, `/clear` or `/barmkin-mod-clear-taint`). A load that is denied, returns an error or throws leaves the session tainted until the taint clears: the reservation is not released, so a failed load is fail-closed. Known limitation: the taint's reason is the first one recorded, so when another source's taint lands during a load that then fails, the deny messages still name the failed skill. The taint is held, so this is a misattributed label only, not a bypass.
 
 ### Agent-to-agent firewall
 
@@ -213,6 +228,7 @@ Set via `/config` once the plugin is enabled, or in `pluginConfigs` in a setting
 | `jev_api_key` | string (sensitive) | unset | Bearer credential |
 | `mcp_server_allowlist` | string (multiple) | unset (allow all) | MCP server names allowed to run tools |
 | `sdk_prompts_clear_taint` | boolean | `false` | Let an `sdk`-origin prompt (a headless `claude -p` or Agent SDK lane) clear the taint and sensitive-access flag, as a person's prompt does |
+| `taint_clear` | string (`human-origin` or `sticky`) | `human-origin` | How the taint and sensitive-access flag clear: on a person's prompt, or sticky until `/compact`, `/clear` or `/barmkin-mod-clear-taint` (see [Taint lifecycle](#taint-lifecycle-taint_clear-posture)) |
 | `sast_hold_on_high_severity` | boolean | `false` | Ask for acknowledgment on an ERROR-severity semgrep finding |
 | `sast_semgrep_path` | string | unset | Absolute path to the semgrep binary, when it isn't resolvable by bare name on the Claude Code process's PATH |
 
