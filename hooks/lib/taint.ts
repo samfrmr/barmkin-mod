@@ -23,6 +23,19 @@ export function isOutwardEffectCommand(command: string): boolean {
   return OUTWARD_EFFECT_PATTERNS.some((re) => re.test(command))
 }
 
+// Whether a `prompt.submit` of this origin may clear the taint (and the
+// sensitive-access leg). Only a person's own prompt does: the composer (typed
+// at the terminal) and the Remote Control bridge. Every other origin -- an SDK
+// host's turn, a task notification, a scheduled trigger, a peer or relay
+// message, a channel, an unclassified or missing origin -- is not a human
+// reading what happened, so it leaves the taint standing. A headless lane,
+// where every prompt is `sdk`, opts in with `allowSdk`.
+export function promptClearsTaint(origin: unknown, allowSdk: boolean): boolean {
+  const kind = origin && typeof origin === 'object' ? (origin as { kind?: unknown }).kind : undefined
+  if (kind === 'composer' || kind === 'bridge') return true
+  return allowSdk && kind === 'sdk'
+}
+
 export type TaintDecision = 'pass' | 'escalate' | 'deny'
 
 export interface TaintThresholds {

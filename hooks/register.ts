@@ -28,14 +28,24 @@ import {
 } from './lib/redaction'
 import { scrubInvisible } from './lib/scrub'
 import {
-  isOutwardEffectCommand,
   composeScreen,
   isOutsideCwd,
   heuristicInjectionScore,
+  promptClearsTaint,
   UNTRUSTED_CONTENT_WARNING,
   type ScoreSource,
   type ScreenOutcome,
 } from './lib/taint'
+import {
+  classifyEgress,
+  decideEgress,
+  touchesSecretPath,
+  isInlineSkillShell,
+  inlineShellDenyReason,
+  type EgressCall,
+  type EgressVerdict,
+  type TrifectaLegs,
+} from './lib/egress'
 import {
   buildSystemOneRequest,
   parseSystemOneResponse,
@@ -64,6 +74,14 @@ interface Verdict {
   at: number
 }
 
+interface EgressRecord {
+  tool: string
+  classIds: string[]
+  decision: 'deny' | 'warn'
+  rule: string
+  at: number
+}
+
 interface SastEntry {
   path: string
   findings: Array<{ ruleId: string; severity: 'ERROR' | 'WARNING' | 'INFO'; message: string; line: number }>
@@ -72,6 +90,10 @@ interface SastEntry {
 
 const tainted = atom({ plugin: 'barmkin-mod', key: 'tainted' }, false)
 const taintReason = atom({ plugin: 'barmkin-mod', key: 'taintReason' }, null as string | null)
+// Trifecta leg B (sensitive access); leg A is `tainted`, leg C is evaluated per call.
+const sensitiveAccess = atom({ plugin: 'barmkin-mod', key: 'sensitiveAccess' }, false)
+const sensitiveReason = atom({ plugin: 'barmkin-mod', key: 'sensitiveReason' }, null as string | null)
+const lastEgress = atom({ plugin: 'barmkin-mod', key: 'lastEgress' }, null as EgressRecord | null)
 const lastVerdict = atom({ plugin: 'barmkin-mod', key: 'lastVerdict' }, null as Verdict | null)
 const breakerOpenUntil = atom({ plugin: 'barmkin-mod', key: 'breakerOpenUntil' }, 0)
 const breakerFailureCount = atom({ plugin: 'barmkin-mod', key: 'breakerFailureCount' }, 0)
@@ -224,6 +246,49 @@ async function readTaint($: any): Promise<{ tainted: boolean; reason: string | n
   return { tainted: await read($, tainted), reason: await read($, taintReason) }
 }
 
+// Leg B of the trifecta. Written through the same queue as the taint so a
+// human prompt's reset cannot interleave with it. The first reason recorded
+// for a session wins, as it does for the taint.
+function markSensitive($: any, reason: string): Promise<void> {
+  return serializeTaintWrite(async () => {
+    await update($, sensitiveAccess, () => true)
+    await update($, sensitiveReason, (current: string | null) => current ?? reason)
+  })
+}
+
+async function readLegs($: any): Promise<TrifectaLegs> {
+  await taintWrites
+  return {
+    untrusted: await read($, tainted),
+    untrustedReason: await read($, taintReason),
+    sensitive: await read($, sensitiveAccess),
+    sensitiveReason: await read($, sensitiveReason),
+  }
+}
+
+// Marks leg B when a call names a secret-bearing path.
+async function noteSensitiveAccess($: any, call: EgressCall): Promise<void> {
+  if (touchesSecretPath(call)) await markSensitive($, 'a ' + call.tool + ' call named a credential path')
+}
+
+// The egress gate for one call: notes any sensitive access in it, classifies
+// it against the egress classes, and decides over the trifecta legs. A deny or
+// warn is recorded for the status surface. Never answers allow.
+async function egressGate($: any, call: EgressCall): Promise<EgressVerdict> {
+  await noteSensitiveAccess($, call)
+  const verdict = decideEgress(classifyEgress(call), await readLegs($))
+  if (verdict.kind !== 'pass') {
+    await update($, lastEgress, () => ({
+      tool: call.tool,
+      classIds: verdict.classIds,
+      decision: verdict.kind,
+      rule: verdict.kind === 'deny' ? verdict.rule : 'untrusted',
+      at: Date.now(),
+    }))
+  }
+  return verdict
+}
+
 // Checks and reserves the taint in one queued write, so two Skill calls
 // dispatched together cannot both see an untainted session. Returns the
 // standing reason when the session is already tainted (the load is denied),
@@ -324,6 +389,7 @@ async function screenContent(
   }))
 
   if (composed.tainted) await markTainted($, composed.reason)
+  if (composed.tainted && composed.question === 'credentials') await markSensitive($, composed.reason)
 
   if (toolUseId) {
     try {
@@ -394,14 +460,20 @@ async function sessionStartHook($: any, e: any, next: any) {
 }
 
 // ---------------------------------------------------------------------------
-// prompt.submit: redact secrets the user pasted, clear taint for the new turn.
+// prompt.submit: redact secrets the user pasted, clear taint when a human sent it.
 // ---------------------------------------------------------------------------
 
 async function promptSubmitHook($: any, e: any, next: any) {
-  await serializeTaintWrite(async () => {
-    await update($, tainted, () => false)
-    await update($, taintReason, () => null)
-  })
+  // Only a person's prompt clears the taint and the sensitive-access leg: the
+  // composer or the bridge, plus an SDK prompt when the headless-lane option is on.
+  if (promptClearsTaint(e.origin, pluginOptions.sdk_prompts_clear_taint === true)) {
+    await serializeTaintWrite(async () => {
+      await update($, tainted, () => false)
+      await update($, taintReason, () => null)
+      await update($, sensitiveAccess, () => false)
+      await update($, sensitiveReason, () => null)
+    })
+  }
 
   if (typeof e.text !== 'string') return next(e)
   if (exceedsScanLimit(e.text)) {
@@ -447,6 +519,9 @@ async function mcpGuardHook($: any, e: any, next: any) {
     }
   }
 
+  const egress = await egressGate($, { tool: e.tool, input: e })
+  if (egress.kind === 'deny') return { deny: egress.message }
+
   const result = await next(e)
   if (!result || result.deny || result.isError) return result
 
@@ -468,21 +543,49 @@ async function mcpGuardCatch($: any, e: any, next: any) {
 // Untrusted-content taint + injection screen.
 // ---------------------------------------------------------------------------
 
-async function outwardEffectGuardHook($: any, e: any, next: any) {
-  const { tainted: isTainted, reason } = await readTaint($)
-  if (isTainted && typeof e.command === 'string' && isOutwardEffectCommand(e.command)) {
-    return {
-      deny:
-        'barmkin-mod: this session is handling untrusted content (' +
-        (reason ?? 'unspecified') +
-        '). Outward-effect commands are blocked until the user sends a new message asking for this explicitly.',
-    }
-  }
-  return next(e)
+// One gate for every egress class that is not an MCP call or a skill load:
+// shell commands, web fetches and persistence-surface writes. A deny answers
+// before the tool runs; a warn lets it run and tells Claude.
+async function egressGuardHook($: any, e: any, next: any) {
+  const egress = await egressGate($, { tool: e.tool, input: e })
+  if (egress.kind === 'deny') return { deny: egress.message }
+  const result = await next(e)
+  if (egress.kind === 'warn' && result && !result.deny && !result.isError) return appendContext(result, egress.message)
+  return result
 }
 
-async function outwardEffectGuardCatch($: any, e: any, next: any) {
-  return { deny: 'barmkin-mod: the taint guard failed (' + next.error.kind + '), so this command was not run' }
+async function egressGuardCatch($: any, e: any, next: any) {
+  return { deny: 'barmkin-mod: the egress guard failed (' + next.error.kind + '), so this call was not run' }
+}
+
+// ---------------------------------------------------------------------------
+// Mediation guard. A skill's inline shell (`!`command``) runs the command
+// through the permission check but never through the mods' tool.call chain, so
+// none of the tool.call guards above see it; tool.check is the one event it
+// does fire, with an empty tool_use_id. This hook only ever answers deny or
+// returns what the permission layer decided, never allow or ask.
+// ---------------------------------------------------------------------------
+
+async function toolCheckGuardHook($: any, e: any, next: any) {
+  const decided = await next(e)
+  if (decided && decided.decision === 'deny') return decided
+  const input = e.input && typeof e.input === 'object' ? (e.input as Record<string, unknown>) : null
+  if (!input || typeof input.command !== 'string') return decided
+
+  const call: EgressCall = { tool: e.tool, input }
+  if (isInlineSkillShell(e.tool_use_id)) {
+    const reason = inlineShellDenyReason(call)
+    if (reason) return { decision: 'deny', reason }
+  }
+  // Second line for an ordinary call: the same egress verdict the tool.call
+  // guard reached, in case the command was rewritten after it.
+  const egress = await egressGate($, call)
+  if (egress.kind === 'deny') return { decision: 'deny', reason: egress.message }
+  return decided
+}
+
+async function toolCheckGuardCatch($: any, e: any, next: any) {
+  return { decision: 'deny', reason: 'barmkin-mod: the shell mediation guard failed (' + next.error.kind + '), so this command was not run' }
 }
 
 async function webFetchTaintHook($: any, e: any, next: any) {
@@ -499,6 +602,7 @@ async function webFetchTaintHook($: any, e: any, next: any) {
 }
 
 async function readTaintHook($: any, e: any, next: any) {
+  await noteSensitiveAccess($, { tool: e.tool, input: e })
   const result = await next(e)
   if (!result || result.deny || result.isError) return result
   if (typeof e.file_path !== 'string') return result
@@ -571,6 +675,7 @@ async function redactionHook($: any, e: any, next: any) {
 
   let changed = false
   let hiddenCount = 0
+  let redactionHits = 0
   const next_: any = { ...result }
 
   // Every string inside the result is rewritten in place, whatever its
@@ -585,6 +690,7 @@ async function redactionHook($: any, e: any, next: any) {
       const scrubbed = scrubInvisible(value)
       hiddenCount += scrubbed.hiddenCount
       const { text: redacted, redactedCount } = redactInEitherView(value)
+      redactionHits += redactedCount
       if (redactedCount === 0 && scrubbed.strippedCount === 0) return value
       changed = true
       return redacted
@@ -607,10 +713,18 @@ async function redactionHook($: any, e: any, next: any) {
       const scrubbed = scrubInvisible(c)
       hiddenCount += scrubbed.hiddenCount
       const { text: redacted, redactedCount } = redactInEitherView(c)
+      redactionHits += redactedCount
       if (redactedCount > 0 || scrubbed.strippedCount > 0) changed = true
       return redacted
     })
     next_.context = redactedContext
+  }
+
+  // A redaction hit means a credential-shaped value just passed through this
+  // session: leg B of the trifecta. Written before returning (and queued with
+  // the taint writes) so the very next egress call sees it.
+  if (redactionHits > 0) {
+    await markSensitive($, 'a ' + (parseMcpServerName(e.tool) ? 'tool' : e.tool) + ' result held a credential-shaped value')
   }
 
   void taintForScrub($, hiddenCount, 'tool:' + (typeof e.tool === 'string' && parseMcpServerName(e.tool) ? 'mcp' : e.tool))
@@ -855,6 +969,7 @@ async function skillToolGuardHook($: any, e: any, next: any) {
   const name = typeof e.skill === 'string' ? e.skill : 'unnamed'
   const standing = await reserveSkillLoad($, 'skill "' + name + '" was loaded')
   if (standing) {
+    await update($, lastEgress, () => ({ tool: 'Skill', classIds: ['skill-load'], decision: 'deny' as const, rule: 'untrusted', at: Date.now() }))
     return {
       deny:
         'barmkin-mod: loading a skill is blocked while this session is handling untrusted content (' +
@@ -919,13 +1034,15 @@ async function findingsPaneHook($: any, e: any, next: any) {
 
 async function hudHook($: any, e: any, next: any) {
   const { tainted: isTainted } = await readTaint($)
+  const isSensitive = await read($, sensitiveAccess)
   const verdict = await read($, lastVerdict)
-  if (!isTainted && !verdict) return next(e)
+  if (!isTainted && !isSensitive && !verdict) return next(e)
 
   const { Box, Text } = $.ui.resolve(e)
   const breakerUntil = await read($, breakerOpenUntil)
   const breakerOpen = breakerUntil > Date.now()
   const parts = ['barmkin-mod', 'taint:' + (isTainted ? 'ON' : 'off'), breakerOpen ? 'classifier:degraded' : 'classifier:ok']
+  if (isSensitive) parts.splice(2, 0, isTainted ? 'sensitive:ON (egress locked)' : 'sensitive:ON')
   if (verdict) {
     parts.push(verdict.decision + ' p=' + verdict.probability.toFixed(2) + ' (' + verdict.model + ')')
   }
@@ -943,11 +1060,18 @@ async function findingsCommandHook($: any) {
 
 async function statusCommandHook($: any) {
   const { tainted: isTainted, reason } = await readTaint($)
+  const isSensitive = await read($, sensitiveAccess)
+  const sensitiveWhy = await read($, sensitiveReason)
+  const egress = await read($, lastEgress)
   const verdict = await read($, lastVerdict)
   const breakerUntil = await read($, breakerOpenUntil)
   const lines = [
     'barmkin-mod status',
     'taint: ' + (isTainted ? 'ON (' + (reason ?? 'unspecified') + ')' : 'off'),
+    'sensitive access: ' + (isSensitive ? 'ON (' + (sensitiveWhy ?? 'unspecified') + ')' : 'off'),
+    'egress: ' +
+      (isTainted && isSensitive ? 'all classes denied (Rule of Two)' : isTainted ? 'gated per class (taint)' : 'open') +
+      (egress ? '; last ' + egress.decision + ': ' + egress.classIds.join(', ') + ' via ' + egress.tool + ' (' + egress.rule + ')' : ''),
     'classifier breaker: ' + (breakerUntil > Date.now() ? 'open (degraded, using heuristics)' : 'closed'),
     verdict
       ? 'last verdict: ' + verdict.decision + ' p=' + verdict.probability.toFixed(2) + ' model=' + verdict.model + ' question=' + verdict.question
@@ -971,12 +1095,13 @@ export function register(on: any, options: Record<string, unknown>) {
 
   on('tool.call', redactionHook).catch(redactionCatch)
   on('tool.call', { tool: /^mcp__/ }, mcpGuardHook).catch(mcpGuardCatch)
-  on('tool.call', { tool: 'Bash' }, outwardEffectGuardHook).catch(outwardEffectGuardCatch)
+  on('tool.call', { tool: ['Bash', 'PowerShell', 'WebFetch', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'] }, egressGuardHook).catch(egressGuardCatch)
   on('tool.call', { tool: ['WebFetch', 'WebSearch'] }, webFetchTaintHook).catch(taintScreenCatch)
   on('tool.call', { tool: 'Read' }, readTaintHook).catch(taintScreenCatch)
   on('tool.call', { tool: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] }, sastHook)
 
   on('tool.call', { tool: 'Skill' }, skillToolGuardHook).catch(skillToolGuardCatch)
+  on('tool.check', { tool: ['Bash', 'PowerShell'] }, toolCheckGuardHook).catch(toolCheckGuardCatch)
 
   on('skill.prompt', skillPromptHook).catch(skillPromptCatch)
   on('prompt.attachment', { type: 'skill_listing' }, skillListingHook).catch(skillListingCatch)
