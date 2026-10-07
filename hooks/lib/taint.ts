@@ -79,11 +79,9 @@ export function sessionEndClearsTaint(reason: unknown): boolean {
 // Who may run /barmkin-mod-clear-taint. The same human origins that clear on
 // a prompt (so a peer, channel or task notification cannot talk the session
 // out of its taint), plus a plugin's own `$.command.run`, which is trusted
-// code running at this mod's level. The engine stamps every command a person
-// or channel runs, so an absent origin (a plugin's run as the test kit makes
-// it) is the plugin case; an origin that is present and not human refuses.
+// code running at this mod's level. Fail closed: an absent, unstamped or
+// unrecognised origin refuses.
 export function commandMayClearTaint(origin: unknown, allowSdk: boolean): boolean {
-  if (origin === undefined) return true
   if (promptClearsTaint(origin, allowSdk)) return true
   const kind = origin && typeof origin === 'object' ? (origin as { kind?: unknown }).kind : undefined
   return kind === 'plugin'

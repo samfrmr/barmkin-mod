@@ -661,7 +661,7 @@ test('/barmkin-mod-clear-taint clears both legs in sticky posture and says so in
   await taintViaFetch($, on)
   await $.tool.call({ tool: 'Read', file_path: '/proj/.env' })
   expect(await gitPushDenied($)).toBe(true)
-  const answer = await $.command.run({ command: 'barmkin-mod-clear-taint', args: '' })
+  const answer = await $.command.run({ command: 'barmkin-mod-clear-taint', args: '', origin: { kind: 'composer' } })
   expect(answer.text.split('\n')).toHaveLength(1)
   expect(answer.text).toContain('taint posture was sticky')
   expect(answer.text).toContain('cleared taint')
@@ -678,22 +678,30 @@ test('/barmkin-mod-clear-taint clears both legs in the default human-origin post
   await taintViaFetch($, on)
   await $.tool.call({ tool: 'Read', file_path: '/proj/.env' })
   expect(await gitPushDenied($)).toBe(true)
-  const answer = await $.command.run({ command: 'barmkin-mod-clear-taint', args: '' })
+  const answer = await $.command.run({ command: 'barmkin-mod-clear-taint', args: '', origin: { kind: 'composer' } })
   expect(answer.text).toContain('taint posture was human-origin')
   expect(answer.text).toContain('egress is re-enabled')
   expect(await gitPushDenied($)).toBe(false)
 })
 
+test('/barmkin-mod-clear-taint with no origin clears nothing', STICKY, async ($, on) => {
+  await taintViaFetch($, on)
+  expect(await gitPushDenied($)).toBe(true)
+  const answer = await $.command.run({ command: 'barmkin-mod-clear-taint', args: '' })
+  expect(answer.text).toContain('nothing was cleared')
+  expect(await gitPushDenied($)).toBe(true)
+})
+
 test('/barmkin-mod-clear-taint is a stated no-op on a clean human-origin session', async ($, on) => {
   on('tool.call', () => ({ result: 'ok' }))
-  const answer = await $.command.run({ command: 'barmkin-mod-clear-taint', args: '' })
+  const answer = await $.command.run({ command: 'barmkin-mod-clear-taint', args: '', origin: { kind: 'composer' } })
   expect(answer.text).toContain('taint posture was human-origin')
   expect(answer.text).toContain('nothing was held')
   expect(await gitPushDenied($)).toBe(false)
 })
 
 test('/barmkin-mod-clear-taint is a stated no-op on a clean sticky session', STICKY, async ($, on) => {
-  const answer = await $.command.run({ command: 'barmkin-mod-clear-taint', args: '' })
+  const answer = await $.command.run({ command: 'barmkin-mod-clear-taint', args: '', origin: { kind: 'composer' } })
   expect(answer.text).toContain('taint posture was sticky')
   expect(answer.text).toContain('nothing was held')
 })

@@ -223,7 +223,9 @@ test('commandMayClearTaint allows a person and a plugin, and refuses every other
   expect(commandMayClearTaint({ kind: 'composer' }, false)).toBe(true)
   expect(commandMayClearTaint({ kind: 'bridge' }, false)).toBe(true)
   expect(commandMayClearTaint({ kind: 'plugin', name: 'x' }, false)).toBe(true)
-  expect(commandMayClearTaint(undefined, false)).toBe(true)
+  expect(commandMayClearTaint(undefined, false)).toBe(false)
+  expect(commandMayClearTaint(undefined, true)).toBe(false)
+  expect(commandMayClearTaint({}, false)).toBe(false)
   expect(commandMayClearTaint({ kind: 'sdk' }, false)).toBe(false)
   expect(commandMayClearTaint({ kind: 'sdk' }, true)).toBe(true)
   for (const origin of [{ kind: 'peer' }, { kind: 'channel', server: 's' }, { kind: 'task-notification' }, { kind: 'unclassified' }, null, 'composer', {}]) {
