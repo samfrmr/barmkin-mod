@@ -1,8 +1,8 @@
 // Proves the poisoned-MCP demo fixture (demo/poisoned-mcp/) serves the
 // payload the demo docs describe and that barmkin-mod's guards neutralize
 // or block it. The fixture module is imported directly; the guard behavior runs
-// through the real registered hooks, as in integration.test.ts. That the fixture
-// is inert and local-only is checked by demo/poisoned-mcp/selftest.mjs.
+// through the real registered hooks, as in integration.test.ts. That the server
+// speaks MCP over stdio is checked by demo/poisoned-mcp/selftest.mjs.
 import { expect, test } from 'claude-code/testing'
 import { handleMessage } from '../demo/poisoned-mcp/protocol.mjs'
 import {
