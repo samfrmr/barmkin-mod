@@ -5,15 +5,18 @@ declare module 'claude-code' {
     'barmkin-mod': {
       // Untrusted-content taint (capability: taint + injection screen).
       // Set after WebFetch/WebSearch/mcp__*/out-of-cwd Read results score
-      // above the injection threshold. Cleared on the next prompt a human sent (composer or bridge origin).
+      // above the injection threshold. Cleared by a prompt a human sent
+      // (composer or bridge origin) in the default human-origin posture; in
+      // sticky posture, only by a compaction, a /clear or
+      // /barmkin-mod-clear-taint.
       tainted: boolean
       taintReason: string | null
 
       // Rule-of-Two tracker. Leg A is `tainted` above; leg C is evaluated
       // per call against the egress classes. Leg B (sensitive access) is set
       // when a secret path is named in a call, a tool result trips a
-      // redaction rule, or content scores on the credential question. A
-      // prompt a human sent clears A and B together.
+      // redaction rule, or content scores on the credential question. Cleared
+      // together with A, by the same events.
       sensitiveAccess: boolean
       sensitiveReason: string | null
 

@@ -6,6 +6,12 @@ import {
   isOutsideCwd,
   heuristicInjectionScore,
   promptClearsTaint,
+  parseTaintClearPosture,
+  promptClearsTaintUnder,
+  compactClearsTaint,
+  sessionEndClearsTaint,
+  commandMayClearTaint,
+  describeTaintClear,
   DEFAULT_TAINT_THRESHOLDS,
 } from '../hooks/lib/taint'
 import {
@@ -164,6 +170,85 @@ test('promptClearsTaint treats a missing or malformed origin as not human', () =
   expect(promptClearsTaint(null, true)).toBe(false)
   expect(promptClearsTaint('composer', true)).toBe(false)
   expect(promptClearsTaint({}, true)).toBe(false)
+})
+
+test('parseTaintClearPosture defaults to human-origin and only "sticky" selects sticky', () => {
+  expect(parseTaintClearPosture(undefined)).toBe('human-origin')
+  expect(parseTaintClearPosture('')).toBe('human-origin')
+  expect(parseTaintClearPosture('human-origin')).toBe('human-origin')
+  expect(parseTaintClearPosture('nonsense')).toBe('human-origin')
+  expect(parseTaintClearPosture(true)).toBe('human-origin')
+  expect(parseTaintClearPosture('sticky')).toBe('sticky')
+  expect(parseTaintClearPosture(' Sticky ')).toBe('sticky')
+})
+
+test('promptClearsTaintUnder keeps the human-origin rule in the default posture', () => {
+  expect(promptClearsTaintUnder('human-origin', { kind: 'composer' }, false)).toBe(true)
+  expect(promptClearsTaintUnder('human-origin', { kind: 'bridge' }, false)).toBe(true)
+  expect(promptClearsTaintUnder('human-origin', { kind: 'sdk' }, false)).toBe(false)
+  expect(promptClearsTaintUnder('human-origin', { kind: 'sdk' }, true)).toBe(true)
+  expect(promptClearsTaintUnder('human-origin', { kind: 'peer' }, true)).toBe(false)
+})
+
+test('promptClearsTaintUnder never clears in sticky posture, for any origin or sdk option', () => {
+  for (const origin of [{ kind: 'composer' }, { kind: 'bridge' }, { kind: 'sdk' }, { kind: 'peer' }, undefined]) {
+    expect(promptClearsTaintUnder('sticky', origin, false)).toBe(false)
+    expect(promptClearsTaintUnder('sticky', origin, true)).toBe(false)
+  }
+})
+
+test('compactClearsTaint clears for a compaction of the main conversation that stands', () => {
+  for (const trigger of ['manual', 'auto', 'plugin']) {
+    expect(compactClearsTaint(trigger, undefined, { messages: [] })).toBe(true)
+  }
+})
+
+test('compactClearsTaint leaves the taint for a precompute, a subagent, a skip or a malformed result', () => {
+  expect(compactClearsTaint('precompute', undefined, { messages: [] })).toBe(false)
+  expect(compactClearsTaint('manual', 'agent-1', { messages: [] })).toBe(false)
+  expect(compactClearsTaint('manual', undefined, { skip: 'off' })).toBe(false)
+  expect(compactClearsTaint('manual', undefined, undefined)).toBe(false)
+  expect(compactClearsTaint('manual', undefined, null)).toBe(false)
+  expect(compactClearsTaint('manual', undefined, {})).toBe(false)
+})
+
+test('sessionEndClearsTaint clears on /clear only', () => {
+  expect(sessionEndClearsTaint('clear')).toBe(true)
+  for (const reason of ['resume', 'logout', 'prompt_input_exit', 'other', undefined]) {
+    expect(sessionEndClearsTaint(reason)).toBe(false)
+  }
+})
+
+test('commandMayClearTaint allows a person and a plugin, and refuses every other origin', () => {
+  expect(commandMayClearTaint({ kind: 'composer' }, false)).toBe(true)
+  expect(commandMayClearTaint({ kind: 'bridge' }, false)).toBe(true)
+  expect(commandMayClearTaint({ kind: 'plugin', name: 'x' }, false)).toBe(true)
+  expect(commandMayClearTaint(undefined, false)).toBe(false)
+  expect(commandMayClearTaint(undefined, true)).toBe(false)
+  expect(commandMayClearTaint({}, false)).toBe(false)
+  expect(commandMayClearTaint({ kind: 'sdk' }, false)).toBe(false)
+  expect(commandMayClearTaint({ kind: 'sdk' }, true)).toBe(true)
+  for (const origin of [{ kind: 'peer' }, { kind: 'channel', server: 's' }, { kind: 'task-notification' }, { kind: 'unclassified' }, null, 'composer', {}]) {
+    expect(commandMayClearTaint(origin, true)).toBe(false)
+  }
+})
+
+test('describeTaintClear names the posture, what was cleared and that egress is re-enabled', () => {
+  const line = describeTaintClear('sticky', { tainted: true, taintReason: 'a fetch', sensitive: true, sensitiveReason: 'a .env read' })
+  expect(line).toContain('taint posture was sticky')
+  expect(line).toContain('taint (a fetch)')
+  expect(line).toContain('sensitive access (a .env read)')
+  expect(line).toContain('egress is re-enabled')
+  expect(line).not.toContain('\n')
+  expect(describeTaintClear('human-origin', { tainted: true, taintReason: null, sensitive: false, sensitiveReason: null })).toContain(
+    'cleared taint (unspecified); egress is re-enabled',
+  )
+})
+
+test('describeTaintClear is a stated no-op when nothing is held', () => {
+  const line = describeTaintClear('human-origin', { tainted: false, taintReason: null, sensitive: false, sensitiveReason: null })
+  expect(line).toContain('taint posture was human-origin')
+  expect(line).toContain('nothing was held')
 })
 
 const ids = (tool: string, input: Record<string, unknown>) => classifyEgress({ tool, input }).map((c) => c.id)

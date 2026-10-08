@@ -44,6 +44,13 @@
       "description": "By default only a prompt a person sent (terminal composer or Remote Control bridge) clears the untrusted-content taint and the sensitive-access flag. Turn this on for a headless lane (claude -p, the Agent SDK), where every prompt has the sdk origin and a person is not at a terminal.",
       "default": false
     },
+    "taint_clear": {
+      "type": "string",
+      "title": "How the taint clears",
+      "description": "human-origin (default): a prompt a person sent clears the untrusted-content taint and the sensitive-access flag. sticky: they hold across human prompts, because the injected text is still in the context window, and clear only on /compact, /clear, or the /barmkin-mod-clear-taint command.",
+      "default": "human-origin",
+      "options": ["human-origin", "sticky"]
+    },
     "sast_semgrep_path": {
       "type": "string",
       "title": "semgrep binary path",

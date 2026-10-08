@@ -36,6 +36,76 @@ export function promptClearsTaint(origin: unknown, allowSdk: boolean): boolean {
   return allowSdk && kind === 'sdk'
 }
 
+// How the taint (and the sensitive-access leg) clears. `human-origin` is the
+// default: any prompt a person sent clears both. `sticky` holds them across
+// human prompts, because the injected text is still in the context window
+// after the prompt, and clears them only when the context itself is broken:
+// a compaction, a /clear, or the explicit /barmkin-mod-clear-taint command.
+export type TaintClearPosture = 'human-origin' | 'sticky'
+
+export const DEFAULT_TAINT_CLEAR_POSTURE: TaintClearPosture = 'human-origin'
+
+// An unset, unrecognized or non-string option is the default posture; the
+// manifest's picker already limits the stored value to the two spellings.
+export function parseTaintClearPosture(value: unknown): TaintClearPosture {
+  return typeof value === 'string' && value.trim().toLowerCase() === 'sticky' ? 'sticky' : DEFAULT_TAINT_CLEAR_POSTURE
+}
+
+// A prompt's clearing right under a posture: only human-origin posture lets a
+// prompt clear anything, and then only per promptClearsTaint.
+export function promptClearsTaintUnder(posture: TaintClearPosture, origin: unknown, allowSdk: boolean): boolean {
+  return posture === 'human-origin' && promptClearsTaint(origin, allowSdk)
+}
+
+// Whether a finished `session.compact` breaks the context the taint guards. A
+// precompute installs nothing, a subagent's or fork's own compaction leaves the
+// main conversation as it was, and a skipped compaction changed nothing, so
+// only a compaction of the main conversation that stands clears.
+export function compactClearsTaint(trigger: unknown, agentId: unknown, result: unknown): boolean {
+  if (trigger === 'precompute' || agentId !== undefined) return false
+  if (!result || typeof result !== 'object') return false
+  const { messages, skip } = result as { messages?: unknown; skip?: unknown }
+  return skip === undefined && Array.isArray(messages)
+}
+
+// Whether a `session.end` leaves the model with a fresh context. A /clear ends
+// the conversation under a new session id and fires no `session.start`. A
+// resume brings another conversation's transcript in, which may itself hold a
+// payload, and a quit ends the process, so neither clears.
+export function sessionEndClearsTaint(reason: unknown): boolean {
+  return reason === 'clear'
+}
+
+// Who may run /barmkin-mod-clear-taint. The same human origins that clear on
+// a prompt (so a peer, channel or task notification cannot talk the session
+// out of its taint), plus a plugin's own `$.command.run`, which is trusted
+// code running at this mod's level. Fail closed: an absent, unstamped or
+// unrecognised origin refuses.
+export function commandMayClearTaint(origin: unknown, allowSdk: boolean): boolean {
+  if (promptClearsTaint(origin, allowSdk)) return true
+  const kind = origin && typeof origin === 'object' ? (origin as { kind?: unknown }).kind : undefined
+  return kind === 'plugin'
+}
+
+// What the taint legs held at the moment they were cleared.
+export interface HeldTaint {
+  tainted: boolean
+  taintReason: string | null
+  sensitive: boolean
+  sensitiveReason: string | null
+}
+
+// The one line /barmkin-mod-clear-taint prints: the posture that was active,
+// what was cleared, and the state of egress afterwards.
+export function describeTaintClear(posture: TaintClearPosture, held: HeldTaint): string {
+  const prefix = 'barmkin-mod: taint posture was ' + posture + '; '
+  const cleared: string[] = []
+  if (held.tainted) cleared.push('taint (' + (held.taintReason ?? 'unspecified') + ')')
+  if (held.sensitive) cleared.push('sensitive access (' + (held.sensitiveReason ?? 'unspecified') + ')')
+  if (cleared.length === 0) return prefix + 'nothing was held (taint off, sensitive access off); egress was already open.'
+  return prefix + 'cleared ' + cleared.join(' and ') + '; egress is re-enabled.'
+}
+
 export type TaintDecision = 'pass' | 'escalate' | 'deny'
 
 export interface TaintThresholds {
