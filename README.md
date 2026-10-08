@@ -118,6 +118,8 @@ An ordinary inline command (`git status`, `gh pr diff 12`) is left to the permis
 
 `tool.call` on `mcp__*` enforces a per-server allowlist from the `mcp_server_allowlist` user-config option. An empty allowlist (the default) allows every server — audit-only, matching the "decide with evidence" posture: most installs don't know their MCP server inventory up front, so the guard doesn't block anything until configured.
 
+[`demo/poisoned-mcp/`](demo/poisoned-mcp/README.md) is a local, inert poisoned MCP server with a copy-paste prompt for watching these guards neutralize and block it in a live session.
+
 ### Skill content
 
 `skill.prompt` fires with each skill body once inline shell output is substituted, for model-invoked, `context: fork`, and agent-preloaded skills. Its payload is the skill's name and text, and nothing else: it carries no source or plugin field, so the screen treats every skill body the same rather than narrowing by plugin, personal, or project provenance. The body runs through the same screen as fetched content, then the same redaction as tool results. A deny-grade screen replaces the body with a withhold note; an escalate taints the session and appends the untrusted-content warning; any secret is redacted. The skill's name is never changed, since the dispatcher rejects that. A body that strips more than 32 invisible-text characters taints the session as well, the same rule every other content path follows. A body over the 16 KiB scan limit is withheld whole, so a large skill is unavailable while this mod screens skill bodies. This is a known limitation, by design: it mirrors the rule that withholds an oversize tool result, and the withhold note names the reason.
@@ -237,6 +239,7 @@ Set via `/config` once the plugin is enabled, or in `pluginConfigs` in a setting
 ```
 claude plugin validate --strict .
 claude plugin test
+node demo/poisoned-mcp/selftest.mjs
 ```
 
 Both require Claude Code >= 2.1.287. `.github/workflows/ci.yml` installs `@anthropic-ai/claude-code@2.1.287` from npm on `ubuntu-latest` and runs both — this plugin was developed against an older local build (2.1.283) that lacks `claude plugin test` entirely and rejects some newer event names in `validate`, so CI is the actual verification surface, not a formality. There is deliberately no `.no-mistakes.yaml` `no_ci: true` declaration: unlike a fork of an upstream project, this is a fresh repository fully under this org's control, so standing up real CI was straightforward and gives a true floor-version validation signal that a no-CI bypass would hide.
@@ -251,4 +254,5 @@ hooks/
   lib/                 # pure helpers register.ts imports; no $ use
 types/index.d.ts        # $.state (PluginState) declarations
 tests/                  # pure-function unit tests + mod-level integration tests
+demo/poisoned-mcp/      # inert poisoned MCP server for demonstrating the MCP guard
 ```

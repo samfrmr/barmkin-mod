@@ -29,3 +29,6 @@ jobs:
 
       - name: claude plugin test
         run: npm test
+
+      - name: poisoned-MCP demo fixture is inert and speaks MCP
+        run: node demo/poisoned-mcp/selftest.mjs
