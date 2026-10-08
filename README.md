@@ -242,7 +242,7 @@ claude plugin test
 node demo/poisoned-mcp/selftest.mjs
 ```
 
-Both require Claude Code >= 2.1.287. `.github/workflows/ci.yml` installs `@anthropic-ai/claude-code@2.1.287` from npm on `ubuntu-latest` and runs both — this plugin was developed against an older local build (2.1.283) that lacks `claude plugin test` entirely and rejects some newer event names in `validate`, so CI is the actual verification surface, not a formality. There is deliberately no `.no-mistakes.yaml` `no_ci: true` declaration: unlike a fork of an upstream project, this is a fresh repository fully under this org's control, so standing up real CI was straightforward and gives a true floor-version validation signal that a no-CI bypass would hide.
+The first two require Claude Code >= 2.1.287; the third is plain Node. `.github/workflows/ci.yml` installs `@anthropic-ai/claude-code@2.1.287` from npm on `ubuntu-latest` and runs all three — this plugin was developed against an older local build (2.1.283) that lacks `claude plugin test` entirely and rejects some newer event names in `validate`, so CI is the actual verification surface, not a formality. There is deliberately no `.no-mistakes.yaml` `no_ci: true` declaration: unlike a fork of an upstream project, this is a fresh repository fully under this org's control, so standing up real CI was straightforward and gives a true floor-version validation signal that a no-CI bypass would hide.
 
 Source layout:
 
