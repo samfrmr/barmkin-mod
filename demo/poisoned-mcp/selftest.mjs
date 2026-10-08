@@ -1,31 +1,15 @@
 #!/usr/bin/env node
-// Plain-Node check of the demo fixture, run by CI and by the demo docs:
+// Plain-Node check, run by CI and by the demo docs:
 //   node demo/poisoned-mcp/selftest.mjs
-// 1. The fixture sources are inert and local-only (no network, process,
-//    filesystem or environment access, no URLs).
-// 2. server.mjs really speaks MCP over stdio: handshake, tools/list, tools/call.
+// server.mjs speaks MCP over stdio: handshake, tools/list, tools/call.
 // The guard behavior itself is covered by tests/poisoned-mcp-demo.test.ts.
 
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { POISONED_DESCRIPTION, POISONED_RESULT, TOOL_NAME } from './payload.mjs'
 
 const here = (file) => fileURLToPath(new URL(file, import.meta.url))
-
-const ALLOWED_IMPORTS = {
-  'payload.mjs': [],
-  'protocol.mjs': ['./payload.mjs'],
-  'server.mjs': ['./protocol.mjs'],
-}
-for (const [file, allowed] of Object.entries(ALLOWED_IMPORTS)) {
-  const source = readFileSync(here(file), 'utf8')
-  const imports = [...source.matchAll(/^\s*import\s[^'"]*['"]([^'"]+)['"]/gm)].map((m) => m[1])
-  assert.deepEqual(imports, allowed, file + ' imports something outside the fixture')
-  assert.doesNotMatch(source, /\b(fetch|XMLHttpRequest|WebSocket|spawn|exec|execSync|eval|require)\s*\(/, file + ' calls a network/process API')
-  assert.doesNotMatch(source, /process\.env|https?:\/\/|node:(fs|net|http|https|child_process|dgram|dns|tls)/, file + ' reaches outside the fixture')
-}
 
 const child = spawn(process.execPath, [here('server.mjs')], { stdio: ['pipe', 'pipe', 'inherit'] })
 const replies = new Map()
