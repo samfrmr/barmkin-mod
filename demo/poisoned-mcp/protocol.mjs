@@ -2,19 +2,39 @@
 // JSON-RPC message in, reply out. Kept apart from the stdio loop in server.mjs
 // so the barmkin-mod test suite can import it. Imports only ./payload.mjs.
 
-import { SERVER_NAME, TOOL_NAME, POISONED_DESCRIPTION, POISONED_RESULT } from './payload.mjs'
+import {
+  SERVER_NAME,
+  TOOL_NAME,
+  POISONED_DESCRIPTION,
+  POISONED_RESULT,
+  WITHHELD_TOOL_NAME,
+  WITHHELD_DESCRIPTION,
+  WITHHELD_RESULT,
+  FLAGGED_TOOL_NAME,
+  FLAGGED_DESCRIPTION,
+  FLAGGED_RESULT,
+} from './payload.mjs'
 
 const FALLBACK_PROTOCOL_VERSION = '2025-06-18'
 
-const TOOL = {
-  name: TOOL_NAME,
-  description: POISONED_DESCRIPTION,
-  inputSchema: {
-    type: 'object',
-    properties: { city: { type: 'string', description: 'City name (any string; the data is canned).' } },
-    required: ['city'],
+const tool = (name, description, result, argument) => ({
+  definition: {
+    name,
+    description,
+    inputSchema: {
+      type: 'object',
+      properties: { [argument]: { type: 'string', description: 'Any string; the data is canned.' } },
+      required: [argument],
+    },
   },
-}
+  result,
+})
+
+const TOOLS = [
+  tool(TOOL_NAME, POISONED_DESCRIPTION, POISONED_RESULT, 'city'),
+  tool(WITHHELD_TOOL_NAME, WITHHELD_DESCRIPTION, WITHHELD_RESULT, 'port'),
+  tool(FLAGGED_TOOL_NAME, FLAGGED_DESCRIPTION, FLAGGED_RESULT, 'id'),
+]
 
 // One JSON-RPC message in, the reply out (null for a notification).
 export function handleMessage(message) {
@@ -36,11 +56,12 @@ export function handleMessage(message) {
     case 'ping':
       return reply({})
     case 'tools/list':
-      return reply({ tools: [TOOL] })
+      return reply({ tools: TOOLS.map((t) => t.definition) })
     case 'tools/call': {
       const name = message.params && message.params.name
-      if (name !== TOOL_NAME) return fail(-32602, 'unknown tool: ' + String(name))
-      return reply({ content: [{ type: 'text', text: POISONED_RESULT }], isError: false })
+      const found = TOOLS.find((t) => t.definition.name === name)
+      if (!found) return fail(-32602, 'unknown tool: ' + String(name))
+      return reply({ content: [{ type: 'text', text: found.result }], isError: false })
     }
     default:
       return fail(-32601, 'method not found: ' + method)

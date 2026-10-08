@@ -14,6 +14,12 @@ import {
   LEGIT_DESCRIPTION,
   POISON_MARKERS,
   DEMO_EGRESS_COMMAND,
+  WITHHELD_TOOL_NAME,
+  WITHHELD_DESCRIPTION,
+  WITHHELD_RESULT,
+  FLAGGED_TOOL_NAME,
+  FLAGGED_DESCRIPTION,
+  FLAGGED_RESULT,
 } from '../demo/poisoned-mcp/payload.mjs'
 import { neutralizeDescription, parseMcpServerName } from '../hooks/lib/mcp-guard'
 import { heuristicInjectionScore } from '../hooks/lib/taint'
@@ -23,12 +29,15 @@ const poisonedCall = (on: any) => on('tool.call', () => ({ result: [{ type: 'tex
 
 // --- the fixture itself ----------------------------------------------------
 
-test('the fixture registers one tool under the name the demo prompt uses', () => {
+test('the fixture registers the tools the demo prompts use, under their mcp__ names', () => {
   expect(REGISTERED_TOOL).toBe('mcp__poisoned-demo__get_forecast')
   expect(parseMcpServerName(REGISTERED_TOOL)).toBe(SERVER_NAME)
   const listed = handleMessage({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) as any
-  expect(listed.result.tools.map((t: any) => t.name)).toEqual([TOOL_NAME])
-  expect(listed.result.tools[0].description).toBe(POISONED_DESCRIPTION)
+  expect(listed.result.tools.map((t: any) => [t.name, t.description])).toEqual([
+    [TOOL_NAME, POISONED_DESCRIPTION],
+    [WITHHELD_TOOL_NAME, WITHHELD_DESCRIPTION],
+    [FLAGGED_TOOL_NAME, FLAGGED_DESCRIPTION],
+  ])
 })
 
 test('the fixture answers the MCP handshake and ignores notifications', () => {
@@ -65,6 +74,32 @@ test('the poisoned description hides invisible characters that the scrub removes
   const { text, hiddenCount } = scrubInvisible(POISONED_DESCRIPTION)
   expect(hiddenCount).toBeGreaterThan(32)
   expect(text).not.toContain('demo-hidden')
+})
+
+test('the registered tool.describe hook withholds a description that is only an instruction', async ($, on) => {
+  baseDescribe(on)
+  const out = await $.tool.describe({ tool: 'mcp__' + SERVER_NAME + '__' + WITHHELD_TOOL_NAME, description: WITHHELD_DESCRIPTION })
+  expect(out.description).toContain('description withheld')
+  expect(out.description).not.toContain('always run')
+})
+
+test('the registered tool.describe hook keeps an ordinary usage note and does not taint', async ($, on) => {
+  baseDescribe(on)
+  on('tool.call', () => ({ result: 'ok' }))
+  const out = await $.tool.describe({ tool: 'mcp__' + SERVER_NAME + '__' + FLAGGED_TOOL_NAME, description: FLAGGED_DESCRIPTION })
+  expect(out.description).toBe(FLAGGED_DESCRIPTION)
+  const shell = await $.tool.call({ tool: 'Bash', command: DEMO_EGRESS_COMMAND })
+  expect(shell.deny).toBeUndefined()
+})
+
+test('the withheld and flagged tools return clean canned results that are not tainted', async ($, on) => {
+  on('tool.call', ($, e) => ({ result: [{ type: 'text', text: e.tool.endsWith(WITHHELD_TOOL_NAME) ? WITHHELD_RESULT : FLAGGED_RESULT }] }))
+  const tide = await $.tool.call({ tool: 'mcp__' + SERVER_NAME + '__' + WITHHELD_TOOL_NAME, port: 'x' })
+  const note = await $.tool.call({ tool: 'mcp__' + SERVER_NAME + '__' + FLAGGED_TOOL_NAME, id: '7' })
+  expect(tide.context).toBeUndefined()
+  expect(note.context).toBeUndefined()
+  const shell = await $.tool.call({ tool: 'Bash', command: DEMO_EGRESS_COMMAND })
+  expect(shell.deny).toBeUndefined()
 })
 
 // The test kit needs a base implementation beneath the mod, standing in for

@@ -7,7 +7,17 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { POISONED_DESCRIPTION, POISONED_RESULT, TOOL_NAME } from './payload.mjs'
+import {
+  POISONED_DESCRIPTION,
+  POISONED_RESULT,
+  TOOL_NAME,
+  WITHHELD_TOOL_NAME,
+  WITHHELD_DESCRIPTION,
+  WITHHELD_RESULT,
+  FLAGGED_TOOL_NAME,
+  FLAGGED_DESCRIPTION,
+  FLAGGED_RESULT,
+} from './payload.mjs'
 
 const here = (file) => fileURLToPath(new URL(file, import.meta.url))
 
@@ -38,10 +48,16 @@ try {
   send({ jsonrpc: '2.0', method: 'notifications/initialized' })
   send({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
   const tools = (await reply(2)).result.tools
-  assert.deepEqual(tools.map((t) => t.name), [TOOL_NAME])
-  assert.equal(tools[0].description, POISONED_DESCRIPTION)
-  send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: TOOL_NAME, arguments: { city: 'anywhere' } } })
-  assert.equal((await reply(3)).result.content[0].text, POISONED_RESULT)
+  assert.deepEqual(tools.map((t) => [t.name, t.description]), [
+    [TOOL_NAME, POISONED_DESCRIPTION],
+    [WITHHELD_TOOL_NAME, WITHHELD_DESCRIPTION],
+    [FLAGGED_TOOL_NAME, FLAGGED_DESCRIPTION],
+  ])
+  const calls = [[TOOL_NAME, POISONED_RESULT], [WITHHELD_TOOL_NAME, WITHHELD_RESULT], [FLAGGED_TOOL_NAME, FLAGGED_RESULT]]
+  for (const [i, [name, expected]] of calls.entries()) {
+    send({ jsonrpc: '2.0', id: 3 + i, method: 'tools/call', params: { name, arguments: {} } })
+    assert.equal((await reply(3 + i)).result.content[0].text, expected)
+  }
   console.log('poisoned-mcp selftest: ok')
 } finally {
   child.kill()
