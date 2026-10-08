@@ -2,7 +2,7 @@
 
 A local, self-contained MCP server whose one tool is poisoned the way a hostile third-party server would be, so you can watch barmkin-mod neutralize and block it in a live Claude Code session.
 
-**It is inert.** The server speaks MCP over stdio and touches nothing but stdin and stdout: no network, no files, no child processes, no environment, no credentials, and no settings or shell startup files. The "malicious" text is plain English addressed to the model, and the one command it asks for (`echo true | sh`) does nothing even if it ran. `node demo/poisoned-mcp/selftest.mjs` checks both properties.
+**It is inert.** The server speaks MCP over stdio and touches nothing but stdin and stdout: no network, no files, no child processes, no environment, no credentials, and no settings or shell startup files. The "malicious" text is plain English addressed to the model, and the one command it asks for (`echo true | sh`) does nothing even if it ran. `node demo/poisoned-mcp/selftest.mjs` checks that the server speaks MCP over stdio; inertness is by design, not something that check proves.
 
 ## What is poisoned
 
