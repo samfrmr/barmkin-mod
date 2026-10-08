@@ -63,6 +63,6 @@ To see the server refused before it runs, set the `mcp_server_allowlist` option 
 | `protocol.mjs` | Pure MCP message handling (initialize, tools/list, tools/call) |
 | `server.mjs` | The stdio loop around `protocol.mjs` |
 | `mcp.json` | The `--mcp-config` file registering the server as `poisoned-demo` |
-| `selftest.mjs` | Plain-Node check that the fixture is inert and speaks MCP |
+| `selftest.mjs` | Plain-Node check that the server speaks MCP over stdio |
 
 `tests/poisoned-mcp-demo.test.ts` proves the guard behavior in the table above through the real registered hooks (`claude plugin test`).
