@@ -736,3 +736,103 @@ test('human-origin: session.end with reason clear does not touch the taint', asy
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} })
   expect(await gitPushDenied($)).toBe(true)
 })
+
+// ---------------------------------------------------------------------------
+// HUD: the red tainted-session panel in the AbovePrompt band.
+// ---------------------------------------------------------------------------
+
+const HUD_SURFACES = ['terminal', 'desktop'] as const
+const ABOVE_PROMPT = {
+  plugin: 'barmkin-mod',
+  component: 'AbovePrompt' as const,
+  props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 19 }, view: {} },
+}
+
+// Stands in for the engine beneath the band: an empty tree, no other mod drawing there.
+const BAND_BOTTOM = ($: any, e: any) => $.ui.resolve(e).Box({})
+
+test('HUD: a tainted session draws a red panel saying untrusted content is present and outbound actions may be blocked', async ($, on) => {
+  on('ui.render', BAND_BOTTOM)
+  await taintViaFetch($, on)
+  for (const surface of HUD_SURFACES) {
+    const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
+    expect((await ui.find({ key: 'barmkin-mod-taint' }))?.props.borderColor).toBe('error')
+    const headline = await ui.find({ type: 'Text', text: /session TAINTED/ })
+    expect(headline?.props.color).toBe('error')
+    expect(headline?.props.bold).toBe(true)
+    expect(headline?.text).toContain('Untrusted content is in this session (content scored')
+    expect((await ui.find({ type: 'Text', text: /Outbound actions may be blocked/ }))?.props.color).toBe('error')
+    const clearPath = await ui.find({ type: 'Text', text: /To clear/ })
+    expect(clearPath?.props.color).toBe('error')
+    expect(clearPath?.text).toContain('send your next message or run /barmkin-mod-clear-taint')
+    expect(await ui.find({ type: 'Text', text: /taint:ON/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('HUD: in sticky posture the panel says a message does not clear the taint and names what does', STICKY, async ($, on) => {
+  on('ui.render', BAND_BOTTOM)
+  await taintViaFetch($, on)
+  for (const surface of HUD_SURFACES) {
+    const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
+    const clearPath = (await ui.find({ type: 'Text', text: /To clear/ }))?.text
+    expect(clearPath).toContain('your messages do not clear it')
+    expect(clearPath).toContain('/barmkin-mod-clear-taint')
+    expect(clearPath).toContain('/clear')
+    expect(clearPath).toContain('/compact')
+    expect(clearPath).not.toContain('send your next message')
+    await ui.unmount()
+  }
+})
+
+test('HUD: with sensitive access also held, the panel says every outbound action is blocked', async ($, on) => {
+  on('ui.render', BAND_BOTTOM)
+  await taintViaFetch($, on)
+  await $.tool.call({ tool: 'Read', file_path: '/proj/.env' })
+  for (const surface of HUD_SURFACES) {
+    const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
+    expect((await ui.find({ type: 'Text', text: /every outbound action is blocked/ }))?.props.color).toBe('error')
+    await ui.unmount()
+  }
+})
+
+test('HUD: no panel while the session is clean, only the status line once a verdict is recorded', async ($, on) => {
+  on('ui.render', BAND_BOTTOM)
+  on('tool.call', () => ({ result: 'an ordinary page about gardening' }))
+  await $.tool.call({ tool: 'WebFetch', url: 'https://example.com' })
+  for (const surface of HUD_SURFACES) {
+    const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
+    expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /taint:off/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('HUD: the panel goes away once the taint clears', async ($, on) => {
+  on('ui.render', BAND_BOTTOM)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await taintViaFetch($, on)
+  for (const surface of HUD_SURFACES) {
+    const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
+    expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeDefined()
+    await ui.unmount()
+  }
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' } })
+  for (const surface of HUD_SURFACES) {
+    const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
+    expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('HUD: in sticky posture the panel stays after a message and goes away after /barmkin-mod-clear-taint', STICKY, async ($, on) => {
+  on('ui.render', BAND_BOTTOM)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await taintViaFetch($, on)
+  const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface: 'terminal' })
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' } })
+  expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeDefined()
+  await $.command.run({ command: 'barmkin-mod-clear-taint', args: '', origin: { kind: 'composer' } })
+  expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeUndefined()
+  await ui.unmount()
+})

@@ -71,7 +71,7 @@ Sticky mechanisms:
 - **`/clear`.** A `session.end` hook with `reason: 'clear'` clears both legs. `/clear` fires `session.end` and no `session.start`. A fresh process starts untainted by construction. A `resume` or a quit does not clear: a resumed transcript is another conversation's context and may hold a payload of its own, and this mod does not try to recover taint from a transcript it has not screened.
 - **`/barmkin-mod-clear-taint`.** Clears the taint and the sensitive-access flag in either posture and prints one line naming the posture that was active, what was cleared and that egress is re-enabled, e.g. `barmkin-mod: taint posture was sticky; cleared taint (...) and sensitive access (...); egress is re-enabled.` When nothing is held it is a no-op that says so. It only runs from a person's prompt (the composer or the bridge, plus `sdk` when `sdk_prompts_clear_taint` is on) or a plugin's own `$.command.run`; from a peer, channel, task notification, scheduled trigger, or an absent or unrecognised origin it reports that nothing was cleared, so injected text cannot clear its own taint by invoking the command. Use it when you have read what happened and judge the context safe to continue from.
 
-`/barmkin-mod-status` shows the active posture. Default behavior is unchanged: a deployment that never sets `taint_clear` runs `human-origin`.
+`/barmkin-mod-status` shows the active posture, and the HUD's red tainted-session panel names the clear path for it (see [Classifier explanation surface](#classifier-explanation-surface)). Default behavior is unchanged: a deployment that never sets `taint_clear` runs `human-origin`.
 
 ### Egress gate with Rule of Two
 
@@ -169,7 +169,7 @@ Two Noul questions are asked per screen: whether the content tries to instruct t
 Every screen call records a verdict in `$.state` (`question`, `probability`, `decision`, `model`, timestamp). This feeds:
 
 - `$.ui.notice(tool_use_id, text)` — a one-line note under the pending permission dialog. **The exact field this mod reads for the event's tool-use id is unverified against this build's generated types** (the public reference table doesn't show it for `tool.call`); the call is wrapped so a signature mismatch degrades silently rather than breaking the screen.
-- An `AbovePrompt` HUD band, drawn only while there's something to report (taint on, a verdict recorded, or the breaker open), showing taint state, breaker state, and the last verdict.
+- An `AbovePrompt` HUD band, drawn only while there's something to report (taint on, sensitive access on, or a verdict recorded), showing taint state, breaker state, and the last verdict. While the session is tainted, the band leads with a red panel (the theme's `error` color) that says in plain language that untrusted content is in the session and why, that outbound actions may be blocked (every outbound action, when sensitive access is also held), and how the taint clears under the active `taint_clear` posture: in `human-origin`, your next message or `/barmkin-mod-clear-taint`; in `sticky`, `/barmkin-mod-clear-taint` or `/clear`, with `/compact` named as clearing it but able to carry the injected text forward in its summary. The panel names only paths that clear under that posture: no message in `sticky`, and no `/clear` or `/compact` in `human-origin`. It goes away when the taint clears.
 - `/barmkin-mod-status`, a command-based fallback for surfaces where the band doesn't render (non-interactive runs, some SDK hosts).
 
 ### Posture self-check

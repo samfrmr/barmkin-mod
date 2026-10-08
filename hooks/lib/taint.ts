@@ -106,6 +106,29 @@ export function describeTaintClear(posture: TaintClearPosture, held: HeldTaint):
   return prefix + 'cleared ' + cleared.join(' and ') + '; egress is re-enabled.'
 }
 
+// The HUD's tainted-session warning, in plain language: that untrusted content
+// is in the session, what that restricts, and how the taint clears. The clear
+// path names only what clears under the posture: a person's message (not a
+// compaction or /clear) in human-origin, and never a message in sticky.
+export interface TaintBanner {
+  headline: string
+  restriction: string
+  clearPath: string
+}
+
+export function describeTaintBanner(posture: TaintClearPosture, reason: string | null, sensitive: boolean): TaintBanner {
+  return {
+    headline: 'barmkin-mod: session TAINTED. Untrusted content is in this session (' + (reason ?? 'unspecified') + ').',
+    restriction: sensitive
+      ? 'Sensitive data was also accessed, so every outbound action is blocked: pushes, uploads, web fetches, MCP writes, skill loads, subagents and writes to instruction or config files.'
+      : 'Outbound actions may be blocked: pushes, uploads, web fetches, MCP writes, skill loads and subagents.',
+    clearPath:
+      posture === 'sticky'
+        ? 'To clear (sticky posture): your messages do not clear it. Run /barmkin-mod-clear-taint, or /clear to start a fresh conversation; /compact also clears it, but its summary can carry the injected text forward.'
+        : 'To clear: review what happened, then send your next message or run /barmkin-mod-clear-taint.',
+  }
+}
+
 export type TaintDecision = 'pass' | 'escalate' | 'deny'
 
 export interface TaintThresholds {
