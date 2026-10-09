@@ -257,28 +257,28 @@ test('describeTaintClear is a stated no-op when nothing is held', () => {
 test('describeTaintBanner is one line with icons, saying untrusted content is active and outbound actions may be restricted', () => {
   const line = describeTaintBanner('human-origin', false)
   expect(line).not.toContain('\n')
-  expect(line).toContain('\u26A0 TAINTED: untrusted content active')
-  expect(line).toContain('\u2716 outbound actions may be restricted')
+  expect(line).toContain('\u{1F6A8} TAINTED: untrusted content active')
+  expect(line).toContain('\u{1F6AB} outbound actions may be restricted')
   expect(line).not.toContain('all outbound actions blocked')
 })
 
 test('describeTaintBanner says all outbound actions are blocked when sensitive access is also held', () => {
   const line = describeTaintBanner('sticky', true)
   expect(line).not.toContain('\n')
-  expect(line).toContain('\u2716 all outbound actions blocked')
+  expect(line).toContain('\u{1F6AB} all outbound actions blocked')
   expect(line).not.toContain('may be restricted')
 })
 
 test('describeTaintBanner in human-origin posture names a message and the command, never /clear or /compact', () => {
   const line = describeTaintBanner('human-origin', false)
-  expect(line).toContain('\u21BA clear: your next message or /barmkin-mod-clear-taint')
+  expect(line).toContain('\u{1F9F9} clear: your next message or /barmkin-mod-clear-taint')
   expect(line).not.toContain('/clear')
   expect(line).not.toContain('/compact')
 })
 
 test('describeTaintBanner in sticky posture says a message does not clear, and names the command and /clear', () => {
   const line = describeTaintBanner('sticky', false)
-  expect(line).toContain('\u21BA clear: /barmkin-mod-clear-taint or /clear (messages do not)')
+  expect(line).toContain('\u{1F9F9} clear: /barmkin-mod-clear-taint or /clear (messages do not)')
   expect(line).not.toContain('next message')
   expect(line).not.toContain('/compact')
 })

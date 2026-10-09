@@ -121,13 +121,13 @@ export function describeTaintClear(posture: TaintClearPosture, held: HeldTaint):
 // /clear or compaction clears it, whatever the posture.
 // The reason stays in /barmkin-mod-status to keep the line short.
 export function describeTaintBanner(posture: TaintClearPosture, sensitive: boolean, ackRequired = false): string {
-  const restriction = sensitive ? '\u2716 all outbound actions blocked' : '\u2716 outbound actions may be restricted'
+  const restriction = sensitive ? '\u{1F6AB} all outbound actions blocked' : '\u{1F6AB} outbound actions may be restricted'
   const clear = ackRequired
-    ? '\u21BA unscreened content past the classifier window: run /barmkin-mod-clear-taint to acknowledge (messages and /clear do not)'
+    ? '\u{1F9F9} unscreened content past the classifier window: run /barmkin-mod-clear-taint to acknowledge (messages and /clear do not)'
     : posture === 'sticky'
-      ? '\u21BA clear: /barmkin-mod-clear-taint or /clear (messages do not)'
-      : '\u21BA clear: your next message or /barmkin-mod-clear-taint'
-  return '\u26A0 TAINTED: untrusted content active \u00B7 ' + restriction + ' \u00B7 ' + clear
+      ? '\u{1F9F9} clear: /barmkin-mod-clear-taint or /clear (messages do not)'
+      : '\u{1F9F9} clear: your next message or /barmkin-mod-clear-taint'
+  return '\u{1F6A8} TAINTED: untrusted content active \u00B7 ' + restriction + ' \u00B7 ' + clear
 }
 
 // How much of a piece of content the Jev classifier reads: the payload is cut

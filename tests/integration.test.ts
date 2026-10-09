@@ -598,6 +598,8 @@ test('a prompt that does not clear the taint is still redacted', async ($, on) =
 // ---------------------------------------------------------------------------
 
 const STICKY = { options: { taint_clear: 'sticky' } }
+const JEV = { options: { jev_base_url: 'https://jev.example' } }
+const JEV_STICKY = { options: { jev_base_url: 'https://jev.example', taint_clear: 'sticky' } }
 
 const gitPushDenied = async ($: any) => (await $.tool.call({ tool: 'Bash', command: 'git push origin main' })).deny !== undefined
 
@@ -759,7 +761,7 @@ test('HUD: a tainted session draws one red line saying untrusted content is acti
     const line = await ui.find({ type: 'Text', text: /TAINTED/ })
     expect(line?.props.color).toBe('error')
     expect(line?.props.bold).toBe(true)
-    expect(line?.text).toContain('\u26A0 TAINTED: untrusted content active')
+    expect(line?.text).toContain('\u{1F6A8} TAINTED: untrusted content active')
     expect(line?.text).toContain('outbound actions may be restricted')
     expect(line?.text).toContain('your next message or /barmkin-mod-clear-taint')
     expect(line?.text).not.toContain('\n')
@@ -791,6 +793,53 @@ test('HUD: with sensitive access also held, the line says all outbound actions a
     expect(line?.text).toContain('all outbound actions blocked')
     await ui.unmount()
   }
+})
+
+test('HUD: a clear session with Jev configured draws one green label and no taint warning', JEV, async ($, on) => {
+  on('ui.render', BAND_BOTTOM)
+  for (const surface of HUD_SURFACES) {
+    const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
+    const line = await ui.find({ type: 'Text', text: /Barmkin session guard/ })
+    expect(line?.props.color).toBe('success')
+    expect(line?.text).toBe('\u{1F3F0} Barmkin session guard active')
+    expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /taint:/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('HUD: a clear session without Jev configured draws the amber degraded label', async ($, on) => {
+  on('ui.render', BAND_BOTTOM)
+  for (const surface of HUD_SURFACES) {
+    const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
+    const line = await ui.find({ type: 'Text', text: /Barmkin session guard/ })
+    expect(line?.props.color).toBe('warning')
+    expect(line?.text).toBe('\u{1F3F0} Barmkin session guard degraded')
+    await ui.unmount()
+  }
+})
+
+test('HUD: with Jev configured, an open classifier breaker turns the label amber degraded', JEV, async ($, on) => {
+  on('ui.render', BAND_BOTTOM)
+  on('http.fetch', () => ({ value: { ok: false, status: 503, text: '' } }))
+  const fetchOf = benignFetcher($, on)
+  for (let i = 0; i < 3; i++) await fetchOf(100)
+  expect(await statusText($)).toContain('classifier breaker: open')
+  const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface: 'terminal' })
+  const line = await ui.find({ type: 'Text', text: /Barmkin session guard/ })
+  expect(line?.props.color).toBe('warning')
+  expect(line?.text).toBe('\u{1F3F0} Barmkin session guard degraded')
+  expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('HUD: a tainted session shows the red warning and not the green label', async ($, on) => {
+  on('ui.render', BAND_BOTTOM)
+  await taintViaFetch($, on)
+  const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface: 'terminal' })
+  expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Barmkin session guard/ })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('HUD: no panel while the session is clean, only the status line once a verdict is recorded', async ($, on) => {
@@ -840,8 +889,6 @@ test('HUD: in sticky posture the panel stays after a message and goes away after
 // /barmkin-mod-clear-taint from a person clears that taint.
 // ---------------------------------------------------------------------------
 
-const JEV = { options: { jev_base_url: 'https://jev.example' } }
-const JEV_STICKY = { options: { jev_base_url: 'https://jev.example', taint_clear: 'sticky' } }
 const WINDOW = 4000
 
 const noul = (injection: number, credentials = 0.05) =>
