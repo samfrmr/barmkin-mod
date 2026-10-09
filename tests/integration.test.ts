@@ -750,6 +750,15 @@ const ABOVE_PROMPT = {
   props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 19 }, view: {} },
 }
 
+const PROMPT_HINT = {
+  plugin: 'barmkin-mod',
+  component: 'PromptHint' as const,
+  props: { isDraft: false, isWorking: false, hint: '? for shortcuts' },
+}
+
+// Stands in for the engine's mode-switcher line that PromptHint wraps.
+const HINT_BOTTOM = ($: any, e: any) => $.ui.resolve(e).Text({ key: 'engine-hint', children: ['\u23F5\u23F5 accept edits on (shift+tab to cycle)'] })
+
 // Stands in for the engine beneath the band: an empty tree, no other mod drawing there.
 const BAND_BOTTOM = ($: any, e: any) => $.ui.resolve(e).Box({})
 
@@ -795,23 +804,28 @@ test('HUD: with sensitive access also held, the line says all outbound actions a
   }
 })
 
-test('HUD: a clear session with Jev configured draws one green label and no taint warning', JEV, async ($, on) => {
-  on('ui.render', BAND_BOTTOM)
+test('HUD: a clear session with Jev configured draws one green label under the hint and no taint warning', JEV, async ($, on) => {
+  on('ui.render', { component: 'PromptHint' }, HINT_BOTTOM)
+  on('ui.render', { component: 'AbovePrompt' }, BAND_BOTTOM)
   for (const surface of HUD_SURFACES) {
-    const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
+    const ui = await $.ui.mount({ ...PROMPT_HINT, surface })
     const line = await ui.find({ type: 'Text', text: /Barmkin session guard/ })
     expect(line?.props.color).toBe('success')
     expect(line?.text).toBe('\u{1F3F0} Barmkin session guard active')
-    expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeUndefined()
-    expect(await ui.find({ type: 'Text', text: /taint:/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /accept edits/ })).toBeDefined()
     await ui.unmount()
+    const band = await $.ui.mount({ ...ABOVE_PROMPT, surface })
+    expect(await band.find({ type: 'Text', text: /Barmkin session guard/ })).toBeUndefined()
+    expect(await band.find({ key: 'barmkin-mod-taint' })).toBeUndefined()
+    expect(await band.find({ type: 'Text', text: /taint:/ })).toBeUndefined()
+    await band.unmount()
   }
 })
 
-test('HUD: a clear session without Jev configured draws the amber degraded label', async ($, on) => {
-  on('ui.render', BAND_BOTTOM)
+test('HUD: a clear session without Jev configured draws the amber degraded label under the hint', async ($, on) => {
+  on('ui.render', { component: 'PromptHint' }, HINT_BOTTOM)
   for (const surface of HUD_SURFACES) {
-    const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
+    const ui = await $.ui.mount({ ...PROMPT_HINT, surface })
     const line = await ui.find({ type: 'Text', text: /Barmkin session guard/ })
     expect(line?.props.color).toBe('warning')
     expect(line?.text).toBe('\u{1F3F0} Barmkin session guard degraded')
@@ -820,24 +834,37 @@ test('HUD: a clear session without Jev configured draws the amber degraded label
 })
 
 test('HUD: with Jev configured, an open classifier breaker turns the label amber degraded', JEV, async ($, on) => {
-  on('ui.render', BAND_BOTTOM)
+  on('ui.render', { component: 'PromptHint' }, HINT_BOTTOM)
   on('http.fetch', () => ({ value: { ok: false, status: 503, text: '' } }))
   const fetchOf = benignFetcher($, on)
   for (let i = 0; i < 3; i++) await fetchOf(100)
   expect(await statusText($)).toContain('classifier breaker: open')
-  const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface: 'terminal' })
+  const ui = await $.ui.mount({ ...PROMPT_HINT, surface: 'terminal' })
   const line = await ui.find({ type: 'Text', text: /Barmkin session guard/ })
   expect(line?.props.color).toBe('warning')
   expect(line?.text).toBe('\u{1F3F0} Barmkin session guard degraded')
-  expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeUndefined()
   await ui.unmount()
 })
 
-test('HUD: a tainted session shows the red warning and not the green label', async ($, on) => {
-  on('ui.render', BAND_BOTTOM)
+test('HUD: the label is drawn after the engine hint line, not before it', JEV, async ($, on) => {
+  on('ui.render', { component: 'PromptHint' }, HINT_BOTTOM)
+  const ui = await $.ui.mount({ ...PROMPT_HINT, surface: 'terminal' })
+  const texts = await ui.findAll({ type: 'Text' })
+  const order = texts.map((t: any) => t.text)
+  expect(order.findIndex((t: string) => /accept edits/.test(t))).toBeLessThan(order.findIndex((t: string) => /Barmkin session guard/.test(t)))
+  await ui.unmount()
+})
+
+test('HUD: a tainted session shows the red warning above and no label under the hint', async ($, on) => {
+  on('ui.render', { component: 'PromptHint' }, HINT_BOTTOM)
+  on('ui.render', { component: 'AbovePrompt' }, BAND_BOTTOM)
   await taintViaFetch($, on)
-  const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface: 'terminal' })
-  expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeDefined()
+  const band = await $.ui.mount({ ...ABOVE_PROMPT, surface: 'terminal' })
+  expect(await band.find({ key: 'barmkin-mod-taint' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /Barmkin session guard/ })).toBeUndefined()
+  await band.unmount()
+  const ui = await $.ui.mount({ ...PROMPT_HINT, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /accept edits/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Barmkin session guard/ })).toBeUndefined()
   await ui.unmount()
 })
