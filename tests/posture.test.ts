@@ -5,7 +5,7 @@ const GOOD_SEAT = { merged: { sandbox: { enabled: true }, disableSkillShellExecu
 
 test('warns when not seated in managed prependPlugins at all', () => {
   const warnings = checkPosture({ merged: {}, policy: {} }, 'barmkin-mod', [])
-  expect(warnings.some((w) => w.includes('not seated in managed prependPlugins'))).toBe(true)
+  expect(warnings.some((w) => w.includes('is not in managed prependPlugins'))).toBe(true)
 })
 
 test('warns when sec-default is seated ahead of this plugin', () => {
@@ -32,7 +32,7 @@ test('does not warn about seating when this plugin is ahead of sec-default', () 
     'barmkin-mod',
     ['github'],
   )
-  expect(warnings.some((w) => w.includes('not seated'))).toBe(false)
+  expect(warnings.some((w) => w.includes('is not in managed prependPlugins'))).toBe(false)
   expect(warnings.some((w) => w.includes('sec-default is seated ahead'))).toBe(false)
 })
 
@@ -87,14 +87,27 @@ test('a fully hardened posture produces no warnings', () => {
 
 test('a failed policy read reports seating as unverified and still runs the merged checks', () => {
   const warnings = checkPosture({ merged: {}, policy: null }, 'barmkin-mod', ['github'])
-  expect(warnings.some((w) => w.includes('seating') && w.includes('unverified'))).toBe(true)
-  expect(warnings.some((w) => w.includes('not seated'))).toBe(false)
-  expect(warnings.some((w) => w.includes('the Bash sandbox is off'))).toBe(true)
+  expect(warnings.some((w) => w.includes('seating unverified'))).toBe(true)
+  expect(warnings.some((w) => w.includes('is not in managed prependPlugins'))).toBe(false)
+  expect(warnings.some((w) => w.includes('Bash sandbox is off'))).toBe(true)
 })
 
 test('a failed merged read reports its checks as unverified and still checks seating', () => {
   const warnings = checkPosture({ merged: null, policy: { prependPlugins: ['sec-default@builtin', 'barmkin-mod@acme'] } }, 'barmkin-mod', ['github'])
   expect(warnings.some((w) => w.includes('unverified'))).toBe(true)
-  expect(warnings.some((w) => w.includes('the Bash sandbox is off'))).toBe(false)
+  expect(warnings.some((w) => w.includes('Bash sandbox is off'))).toBe(false)
   expect(warnings.some((w) => w.includes('sec-default is seated ahead'))).toBe(true)
+})
+
+test('every warning is a single terminal-safe line that states a fix', () => {
+  const all = [
+    ...checkPosture({ merged: { permissions: { defaultMode: 'bypassPermissions' } }, policy: {} }, 'barmkin-mod', []),
+    ...checkPosture({ merged: null, policy: { prependPlugins: ['sec-default@builtin', 'barmkin-mod@acme'] } }, 'barmkin-mod', []),
+    ...checkPosture({ merged: {}, policy: null }, 'barmkin-mod', []),
+  ]
+  expect(all.length).toBeGreaterThan(6)
+  for (const w of all) {
+    expect(w).not.toMatch(/[\n\r`\x1b]/)
+    expect(w.length).toBeLessThan(150)
+  }
 })
