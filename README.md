@@ -44,7 +44,7 @@ barmkin-mod is a Claude Code plugin. Point your Claude Code plugin install at th
 > [!IMPORTANT]
 > For full coverage, seat the plugin in managed `prependPlugins`. Unseated, it cannot see skill text, `CLAUDE.md` or other prompt-assembly content. If `sec-default` is seated ahead of it, it still cannot see `skill.prompt`, `prompt.context` or `prompt.section`.
 
-At session start the mod runs a posture self-check and warns when:
+At session start the mod runs a posture self-check and emits one concise line per condition, naming the condition, why it matters and the fix. It warns when:
 
 - the plugin is not seated in managed `prependPlugins`,
 - `permissions.defaultMode` is `bypassPermissions`,
