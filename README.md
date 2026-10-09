@@ -1,4 +1,4 @@
-# barmkin-mod
+# 🏰  barmkin-session-guard  🏰
 
 A security layer for Claude Code, packaged as a Claude Code mods plugin. It redacts secrets, tracks untrusted content, and blocks the tool calls that would let an injected instruction send your data somewhere.
 
