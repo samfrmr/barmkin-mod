@@ -965,6 +965,10 @@ const TAINT_COLOR = 'error'
 const CLEAR_ACTIVE = { color: 'success', label: '🏰 Barmkin session guard active' }
 const CLEAR_DEGRADED = { color: 'warning', label: '🏰 Barmkin session guard degraded' }
 
+function clearLabelFor(breakerOpen: boolean) {
+  return getJevOptions(pluginOptions).baseUrl !== '' && !breakerOpen ? CLEAR_ACTIVE : CLEAR_DEGRADED
+}
+
 async function hudHook($: any, e: any, next: any) {
   const { tainted: isTainted, ackReason } = await readTaint($)
   const isSensitive = await read($, sensitiveAccess)
@@ -992,13 +996,25 @@ async function hudHook($: any, e: any, next: any) {
 
   // next(e) may resolve to nothing if no other mod draws in the band, so
   // filter out a falsy child rather than assume an engine placeholder.
-  // A clear session shows one green label instead; the state line below
-  // appears only when there is state to report, as before.
-  const clear = getJevOptions(pluginOptions).baseUrl !== '' && !breakerOpen ? CLEAR_ACTIVE : CLEAR_DEGRADED
-  const clearLabel = isTainted ? null : Text({ key: 'barmkin-mod-active', color: clear.color, children: [clear.label] })
+  // The state line below appears only when there is state to report.
   const stateLine = isTainted || isSensitive || verdict ? Text({ children: [parts.join(' · ')] }) : null
   const theirs = await next(e)
-  return Box({ flexDirection: 'column', children: [theirs, banner, clearLabel, stateLine].filter(Boolean) })
+  return Box({ flexDirection: 'column', children: [theirs, banner, stateLine].filter(Boolean) })
+}
+
+// The clear-session label draws as a second child of the PromptHint footer,
+// directly beneath the engine's own line (mode switcher included). While
+// tainted the red banner in AbovePrompt speaks instead, so the engine's
+// drawing is returned unchanged.
+async function hintHook($: any, e: any, next: any) {
+  const theirs = await next(e)
+  const { tainted: isTainted } = await readTaint($)
+  if (isTainted) return theirs
+  const { Box, Text } = $.ui.resolve(e)
+  const breakerUntil = await read($, breakerOpenUntil)
+  const clear = clearLabelFor(breakerUntil > Date.now())
+  const label = Text({ key: 'barmkin-mod-active', color: clear.color, children: [clear.label] })
+  return Box({ flexDirection: 'column', children: [theirs, label].filter(Boolean) })
 }
 
 async function clearTaintCommandHook($: any, e: any) {
@@ -1068,6 +1084,7 @@ export function register(on: any, options: Record<string, unknown>) {
   on('session.send', sessionSendHook).catch(sessionSendCatch)
   on('agent.spawn', agentSpawnHook).catch(agentSpawnCatch)
   on('ui.render', { component: 'AbovePrompt' }, hudHook)
+  on('ui.render', { component: 'PromptHint' }, hintHook)
   on('command.run', { command: 'barmkin-mod-status' }, statusCommandHook)
   on('command.run', { command: 'barmkin-mod-clear-taint' }, clearTaintCommandHook)
 }
