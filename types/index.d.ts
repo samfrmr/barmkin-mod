@@ -11,6 +11,10 @@ declare module 'claude-code' {
       // /barmkin-mod-clear-taint.
       tainted: boolean
       taintReason: string | null
+      // Non-null when the taint needs a person's /barmkin-mod-clear-taint to
+      // clear (content past the classifier's window with Jev configured): a
+      // prompt, compaction or /clear leaves it standing. Holds why.
+      taintAckReason: string | null
 
       // Rule-of-Two tracker. Leg A is `tainted` above; leg C is evaluated
       // per call against the egress classes. Leg B (sensitive access) is set
