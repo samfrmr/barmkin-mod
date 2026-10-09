@@ -35,6 +35,8 @@ import {
   compactClearsTaint,
   sessionEndClearsTaint,
   commandMayClearTaint,
+  classifierGapReason,
+  CLASSIFIER_WINDOW_CHARS,
   describeTaintClear,
   describeTaintBanner,
   UNTRUSTED_CONTENT_WARNING,
@@ -90,6 +92,10 @@ interface EgressRecord {
 
 const tainted = atom({ plugin: 'barmkin-mod', key: 'tainted' }, false)
 const taintReason = atom({ plugin: 'barmkin-mod', key: 'taintReason' }, null as string | null)
+// Set when the taint needs a person's /barmkin-mod-clear-taint (the classifier
+// gap): holds why. A prompt, compaction or /clear leaves the taint standing
+// while this is set; only the command clears it.
+const taintAckReason = atom({ plugin: 'barmkin-mod', key: 'taintAckReason' }, null as string | null)
 // Trifecta leg B (sensitive access); leg A is `tainted`, leg C is evaluated per call.
 const sensitiveAccess = atom({ plugin: 'barmkin-mod', key: 'sensitiveAccess' }, false)
 const sensitiveReason = atom({ plugin: 'barmkin-mod', key: 'sensitiveReason' }, null as string | null)
@@ -165,19 +171,18 @@ const JEV_QUESTIONS: Record<string, NoulQuestion> = {
 }
 
 // Top-level so it may receive `$` directly (validator rule). The payload is
-// scrubbed with the same REDACTION_RULES as everything else before it leaves
-// for the third-party endpoint. Never throws:
+// redacted with the same REDACTION_RULES as everything else (classifierInput)
+// before it leaves for the third-party endpoint. Never throws:
 // every failure path returns { ok: false, reason }, which screenContent
 // treats as "classifier unavailable" and falls back to heuristics -- it
 // never silently treats a failure as a pass.
 async function callJevSystemOne(
   $: any,
   jev: JevOptions,
-  rawText: string,
+  input: string | null,
 ): Promise<SystemOneParseResult> {
-  const input = classifierInput(rawText, REDACTION_RULES, redactionCounters)
   if (input === null) return { ok: false, reason: 'withheld_input' }
-  const text = input.slice(0, 4000)
+  const text = input.slice(0, CLASSIFIER_WINDOW_CHARS)
   const body = buildSystemOneRequest(jev.model, { content: text }, JEV_QUESTIONS)
   const controller = new AbortController()
   const timer = $.clock.after(JEV_TIMEOUT_MS, () => controller.abort())
@@ -229,25 +234,48 @@ function markTainted($: any, reason: string): Promise<void> {
   })
 }
 
-async function readTaint($: any): Promise<{ tainted: boolean; reason: string | null }> {
+// Taints the session and records that only a person's /barmkin-mod-clear-taint
+// clears it. The first acknowledgement reason recorded for a session wins.
+function markTaintedNeedingAck($: any, reason: string, ackReason: string): Promise<void> {
+  return serializeTaintWrite(async () => {
+    await update($, tainted, () => true)
+    await update($, taintReason, (current: string | null) => current ?? reason)
+    await update($, taintAckReason, (current: string | null) => current ?? ackReason)
+  })
+}
+
+// What a denied call tells Claude about getting unblocked.
+function askAgainHint(ackReason: string | null): string {
+  return ackReason === null
+    ? 'Ask again after a new message.'
+    : 'Ask the user to run /barmkin-mod-clear-taint to acknowledge it; a new message does not clear this taint.'
+}
+
+async function readTaint($: any): Promise<{ tainted: boolean; reason: string | null; ackReason: string | null }> {
   await taintWrites
-  return { tainted: await read($, tainted), reason: await read($, taintReason) }
+  return { tainted: await read($, tainted), reason: await read($, taintReason), ackReason: await read($, taintAckReason) }
 }
 
 // Clears both legs (taint and sensitive access) in one queued write and
 // returns what they held. Every clearing path goes through here: a human
 // prompt in human-origin posture, a compaction or /clear in sticky posture,
-// and /barmkin-mod-clear-taint in either.
-function clearTaintLegs($: any): Promise<HeldTaint> {
+// and /barmkin-mod-clear-taint in either. Only the command is an explicit
+// acknowledgement (`acknowledge`): while a taint requires one, every other
+// path leaves both legs held and returns null.
+function clearTaintLegs($: any, acknowledge: boolean): Promise<HeldTaint | null> {
   return serializeTaintWrite(async () => {
+    const ackReason = await read($, taintAckReason)
+    if (ackReason !== null && !acknowledge) return null
     const held: HeldTaint = {
       tainted: await read($, tainted),
       taintReason: await read($, taintReason),
       sensitive: await read($, sensitiveAccess),
       sensitiveReason: await read($, sensitiveReason),
+      ackReason,
     }
     await update($, tainted, () => false)
     await update($, taintReason, () => null)
+    await update($, taintAckReason, () => null)
     await update($, sensitiveAccess, () => false)
     await update($, sensitiveReason, () => null)
     return held
@@ -275,6 +303,7 @@ async function readLegs($: any): Promise<TrifectaLegs> {
     untrustedReason: await read($, taintReason),
     sensitive: await read($, sensitiveAccess),
     sensitiveReason: await read($, sensitiveReason),
+    ackRequired: (await read($, taintAckReason)) !== null,
   }
 }
 
@@ -306,14 +335,17 @@ async function egressGate($: any, call: EgressCall): Promise<EgressVerdict> {
 // standing reason when the session is already tainted (the load is denied),
 // or null once this load holds the reservation. The reservation is not released
 // when the load fails, so a failed or denied load leaves the session tainted.
-function reserveSkillLoad($: any, loadReason: string): Promise<{ standingReason: string | null } | null> {
+function reserveSkillLoad(
+  $: any,
+  loadReason: string,
+): Promise<{ standingReason: string | null; ackReason: string | null } | null> {
   return serializeTaintWrite(async () => {
     let wasTainted = false
     await update($, tainted, (current: boolean) => {
       wasTainted = current
       return true
     })
-    if (wasTainted) return { standingReason: await read($, taintReason) }
+    if (wasTainted) return { standingReason: await read($, taintReason), ackReason: await read($, taintAckReason) }
     await update($, taintReason, () => loadReason)
     return null
   })
@@ -375,8 +407,12 @@ async function screenContent(
   }
   let jevScores: ScoreSource | null = null
 
+  // What the classifier would be sent. Computed whenever Jev is configured
+  // (even with the breaker open) to tell whether the content fits its window.
+  const jevInput = jev.baseUrl !== '' ? classifierInput(raw, REDACTION_RULES, redactionCounters) : null
+
   if (canUseJev) {
-    const outcome = await callJevSystemOne($, jev, raw)
+    const outcome = await callJevSystemOne($, jev, jevInput)
     if (outcome.ok) {
       jevScores = {
         model: outcome.model,
@@ -389,7 +425,13 @@ async function screenContent(
     }
   }
 
-  const composed = composeScreen(local, jevScores)
+  const screened = composeScreen(local, jevScores)
+  // A withheld (deny) result never reaches Claude, so only content that does
+  // is held to the window.
+  const gap = screened.decision === 'deny' ? null : classifierGapReason(jev.baseUrl !== '', jevInput === null ? null : jevInput.length)
+  const composed: ScreenOutcome = gap
+    ? { ...screened, tainted: true, decision: 'escalate', reason: screened.tainted ? screened.reason : gap }
+    : screened
 
   await update($, lastVerdict, () => ({
     toolUseId: toolUseId ?? '',
@@ -400,8 +442,9 @@ async function screenContent(
     at: now,
   }))
 
-  if (composed.tainted) await markTainted($, composed.reason)
-  if (composed.tainted && composed.question === 'credentials') await markSensitive($, composed.reason)
+  if (gap) await markTaintedNeedingAck($, composed.reason, gap)
+  else if (composed.tainted) await markTainted($, composed.reason)
+  if (screened.tainted && screened.question === 'credentials') await markSensitive($, composed.reason)
 
   if (toolUseId) {
     try {
@@ -483,7 +526,7 @@ async function promptSubmitHook($: any, e: any, next: any) {
   // sensitive-access leg: the composer or the bridge, plus an SDK prompt when
   // the headless-lane option is on. In sticky posture no prompt clears them.
   if (promptClearsTaintUnder(taintClearPosture(), e.origin, pluginOptions.sdk_prompts_clear_taint === true)) {
-    await clearTaintLegs($)
+    await clearTaintLegs($, false)
   }
 
   if (typeof e.text !== 'string') return next(e)
@@ -508,12 +551,12 @@ async function promptSubmitHook($: any, e: any, next: any) {
 
 async function compactHook($: any, e: any, next: any) {
   const result = await next(e)
-  if (taintClearPosture() === 'sticky' && compactClearsTaint(e.trigger, e.agentId, result)) await clearTaintLegs($)
+  if (taintClearPosture() === 'sticky' && compactClearsTaint(e.trigger, e.agentId, result)) await clearTaintLegs($, false)
   return result
 }
 
 async function sessionEndHook($: any, e: any, next: any) {
-  if (taintClearPosture() === 'sticky' && sessionEndClearsTaint(e.reason)) await clearTaintLegs($)
+  if (taintClearPosture() === 'sticky' && sessionEndClearsTaint(e.reason)) await clearTaintLegs($, false)
   return next(e)
 }
 
@@ -808,13 +851,14 @@ async function sessionSendCatch($: any, e: any, next: any) {
 }
 
 async function agentSpawnHook($: any, e: any, next: any) {
-  const { tainted: isTainted, reason } = await readTaint($)
+  const { tainted: isTainted, reason, ackReason } = await readTaint($)
   if (isTainted) {
     return {
       deny:
         'barmkin-mod: subagent spawn blocked while this session is tainted (' +
         (reason ?? 'unspecified') +
-        '). Ask again after a new message.',
+        '). ' +
+        askAgainHint(ackReason),
     }
   }
   return next(e)
@@ -895,7 +939,8 @@ async function skillToolGuardHook($: any, e: any, next: any) {
       deny:
         'barmkin-mod: loading a skill is blocked while this session is handling untrusted content (' +
         (standing.standingReason ?? 'unspecified') +
-        '). Ask again after a new message.',
+        '). ' +
+        askAgainHint(standing.ackReason),
     }
   }
   return next(e)
@@ -914,7 +959,7 @@ async function skillToolGuardCatch($: any, e: any, next: any) {
 const TAINT_COLOR = 'error'
 
 async function hudHook($: any, e: any, next: any) {
-  const { tainted: isTainted } = await readTaint($)
+  const { tainted: isTainted, ackReason } = await readTaint($)
   const isSensitive = await read($, sensitiveAccess)
   const verdict = await read($, lastVerdict)
   if (!isTainted && !isSensitive && !verdict) return next(e)
@@ -935,7 +980,7 @@ async function hudHook($: any, e: any, next: any) {
   if (isTainted) {
     banner = Box({
       key: 'barmkin-mod-taint',
-      children: [Text({ color: TAINT_COLOR, bold: true, children: [describeTaintBanner(taintClearPosture(), isSensitive)] })],
+      children: [Text({ color: TAINT_COLOR, bold: true, children: [describeTaintBanner(taintClearPosture(), isSensitive, ackReason !== null)] })],
     })
   }
 
@@ -947,14 +992,16 @@ async function hudHook($: any, e: any, next: any) {
 
 async function clearTaintCommandHook($: any, e: any) {
   const posture = taintClearPosture()
-  if (!commandMayClearTaint(e.origin, pluginOptions.sdk_prompts_clear_taint === true)) {
+  const { ackReason } = await readTaint($)
+  if (!commandMayClearTaint(e.origin, pluginOptions.sdk_prompts_clear_taint === true, ackReason !== null)) {
     return { text: 'barmkin-mod: taint posture is ' + posture + '; /barmkin-mod-clear-taint was not run from a person\'s prompt, so nothing was cleared.' }
   }
-  return { text: describeTaintClear(posture, await clearTaintLegs($)) }
+  const held = await clearTaintLegs($, true)
+  return { text: held ? describeTaintClear(posture, held) : 'barmkin-mod: nothing was cleared.' }
 }
 
 async function statusCommandHook($: any) {
-  const { tainted: isTainted, reason } = await readTaint($)
+  const { tainted: isTainted, reason, ackReason } = await readTaint($)
   const isSensitive = await read($, sensitiveAccess)
   const sensitiveWhy = await read($, sensitiveReason)
   const egress = await read($, lastEgress)
@@ -964,6 +1011,9 @@ async function statusCommandHook($: any) {
     'barmkin-mod status',
     'taint clear posture: ' + taintClearPosture(),
     'taint: ' + (isTainted ? 'ON (' + (reason ?? 'unspecified') + ')' : 'off'),
+    ...(ackReason !== null
+      ? ['acknowledgement required: ' + ackReason + '; run /barmkin-mod-clear-taint (a message, /clear or /compact does not clear it)']
+      : []),
     'sensitive access: ' + (isSensitive ? 'ON (' + (sensitiveWhy ?? 'unspecified') + ')' : 'off'),
     'egress: ' +
       (isTainted && isSensitive ? 'all classes denied (Rule of Two)' : isTainted ? 'gated per class (taint)' : 'open') +

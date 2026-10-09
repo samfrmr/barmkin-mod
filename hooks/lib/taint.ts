@@ -79,10 +79,13 @@ export function sessionEndClearsTaint(reason: unknown): boolean {
 // Who may run /barmkin-mod-clear-taint. The same human origins that clear on
 // a prompt (so a peer, channel or task notification cannot talk the session
 // out of its taint), plus a plugin's own `$.command.run`, which is trusted
-// code running at this mod's level. Fail closed: an absent, unstamped or
-// unrecognised origin refuses.
-export function commandMayClearTaint(origin: unknown, allowSdk: boolean): boolean {
+// code running at this mod's level. A taint that requires acknowledgement
+// (the classifier gap below) is a person's to acknowledge, so a plugin's run
+// does not clear it. Fail closed: an absent, unstamped or unrecognised origin
+// refuses.
+export function commandMayClearTaint(origin: unknown, allowSdk: boolean, ackRequired = false): boolean {
   if (promptClearsTaint(origin, allowSdk)) return true
+  if (ackRequired) return false
   const kind = origin && typeof origin === 'object' ? (origin as { kind?: unknown }).kind : undefined
   return kind === 'plugin'
 }
@@ -93,6 +96,8 @@ export interface HeldTaint {
   taintReason: string | null
   sensitive: boolean
   sensitiveReason: string | null
+  // Why the taint required acknowledgement (see classifierGapReason), if it did.
+  ackReason?: string | null
 }
 
 // The one line /barmkin-mod-clear-taint prints: the posture that was active,
@@ -101,6 +106,7 @@ export function describeTaintClear(posture: TaintClearPosture, held: HeldTaint):
   const prefix = 'barmkin-mod: taint posture was ' + posture + '; '
   const cleared: string[] = []
   if (held.tainted) cleared.push('taint (' + (held.taintReason ?? 'unspecified') + ')')
+  if (held.ackReason) cleared.push('acknowledgement of ' + held.ackReason)
   if (held.sensitive) cleared.push('sensitive access (' + (held.sensitiveReason ?? 'unspecified') + ')')
   if (cleared.length === 0) return prefix + 'nothing was held (taint off, sensitive access off); egress was already open.'
   return prefix + 'cleared ' + cleared.join(' and ') + '; egress is re-enabled.'
@@ -111,14 +117,41 @@ export function describeTaintClear(posture: TaintClearPosture, held: HeldTaint):
 // only what clears under the posture: a person's message or the command in
 // human-origin, and never a message in sticky (the command or /clear instead;
 // /compact is left out because its summary can carry the injected text on).
+// A taint that requires acknowledgement names the command alone: no message,
+// /clear or compaction clears it, whatever the posture.
 // The reason stays in /barmkin-mod-status to keep the line short.
-export function describeTaintBanner(posture: TaintClearPosture, sensitive: boolean): string {
+export function describeTaintBanner(posture: TaintClearPosture, sensitive: boolean, ackRequired = false): string {
   const restriction = sensitive ? '\u2716 all outbound actions blocked' : '\u2716 outbound actions may be restricted'
-  const clear =
-    posture === 'sticky'
+  const clear = ackRequired
+    ? '\u21BA unscreened content past the classifier window: run /barmkin-mod-clear-taint to acknowledge (messages and /clear do not)'
+    : posture === 'sticky'
       ? '\u21BA clear: /barmkin-mod-clear-taint or /clear (messages do not)'
       : '\u21BA clear: your next message or /barmkin-mod-clear-taint'
   return '\u26A0 TAINTED: untrusted content active \u00B7 ' + restriction + ' \u00B7 ' + clear
+}
+
+// How much of a piece of content the Jev classifier reads: the payload is cut
+// to this many characters of its redacted text before it is sent.
+export const CLASSIFIER_WINDOW_CHARS = 4000
+
+// The classifier gap: with Jev configured, redacted content longer than its
+// window is only partly classified, and the heuristics cannot vouch for the
+// rest. Such content taints the session and the taint needs a person's
+// acknowledgement (the reason returned here is what that acknowledgement
+// covers). `redactedLength` is null when the redacted text was withheld for
+// exceeding the scan limit, which is longer than the window by definition.
+// Without Jev configured nothing is claimed to be classified, so there is no
+// gap to acknowledge.
+export function classifierGapReason(jevConfigured: boolean, redactedLength: number | null): string | null {
+  if (!jevConfigured) return null
+  if (redactedLength !== null && redactedLength <= CLASSIFIER_WINDOW_CHARS) return null
+  return (
+    'content' +
+    (redactedLength === null ? '' : ' of ' + redactedLength + ' characters') +
+    ' past the classifier\'s ' +
+    CLASSIFIER_WINDOW_CHARS +
+    '-character window, so part of it was never classified'
+  )
 }
 
 export type TaintDecision = 'pass' | 'escalate' | 'deny'

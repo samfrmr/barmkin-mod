@@ -835,6 +835,337 @@ test('HUD: in sticky posture the panel stays after a message and goes away after
 })
 
 // ---------------------------------------------------------------------------
+// The classifier gap: with Jev configured, untrusted content longer than the
+// classifier's 4,000-character window taints the session, and only an explicit
+// /barmkin-mod-clear-taint from a person clears that taint.
+// ---------------------------------------------------------------------------
+
+const JEV = { options: { jev_base_url: 'https://jev.example' } }
+const JEV_STICKY = { options: { jev_base_url: 'https://jev.example', taint_clear: 'sticky' } }
+const WINDOW = 4000
+
+const noul = (injection: number, credentials = 0.05) =>
+  JSON.stringify({
+    model: 'jev-1.13.0',
+    answers: { injection: { type: 'noul', noul: injection }, credentials: { type: 'noul', noul: credentials } },
+  })
+
+// Jev answers every question with the given probabilities.
+function jevAnswers($: any, on: any, injection: number, credentials = 0.05) {
+  on('http.fetch', () => ({ value: { ok: true, status: 200, text: noul(injection, credentials) } }))
+}
+
+// A WebFetch that returns `length` characters of benign text (no injection
+// phrase) each time it is called. Hooks go in on the first call, so one session
+// sets this up once and then fetches as often as it likes.
+function benignFetcher($: any, on: any) {
+  let length = 0
+  on('tool.call', ($: any, e: any) => (e.tool === 'WebFetch' ? { result: 'a'.repeat(length) } : { result: 'ok' }))
+  return (n: number) => {
+    length = n
+    return $.tool.call({ tool: 'WebFetch', url: 'https://example.com' })
+  }
+}
+
+async function fetchBenign($: any, on: any, length: number) {
+  return benignFetcher($, on)(length)
+}
+
+const statusText = async ($: any) => (await $.command.run({ command: 'barmkin-mod-status', args: '' })).text as string
+const composerClear = ($: any) => $.command.run({ command: 'barmkin-mod-clear-taint', args: '', origin: { kind: 'composer' } })
+
+test('gap: with Jev configured, benign content over the window taints the session and is flagged untrusted', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  const out = await fetchBenign($, on, WINDOW + 1)
+  expect(out.context.join('\n')).toContain('untrusted external source')
+  expect(await gitPushDenied($)).toBe(true)
+  const status = await statusText($)
+  expect(status).toContain('taint: ON')
+  expect(status).toContain('acknowledgement required')
+  expect(status).toContain('/barmkin-mod-clear-taint')
+  expect(status).toContain(String(WINDOW + 1) + ' characters')
+  expect(status).toContain('4000-character window')
+})
+
+test('gap: content of exactly the window, and short content, leave the session clean with Jev configured', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  const fetchOf = benignFetcher($, on)
+  for (const length of [WINDOW, 200]) {
+    const out = await fetchOf(length)
+    expect(out.context).toBeUndefined()
+    expect(await gitPushDenied($)).toBe(false)
+    expect(await statusText($)).toContain('taint: off')
+  }
+})
+
+test('gap: without Jev configured, over-window benign content does not taint', async ($, on) => {
+  const out = await fetchBenign($, on, WINDOW * 3)
+  expect(out.context).toBeUndefined()
+  expect(await gitPushDenied($)).toBe(false)
+  expect(await statusText($)).toContain('taint: off')
+})
+
+test('gap: without Jev configured, a short injection still taints and a person prompt still clears it', async ($, on) => {
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await taintViaFetch($, on)
+  expect(await gitPushDenied($)).toBe(true)
+  expect(await statusText($)).not.toContain('acknowledgement required')
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' } })
+  expect(await gitPushDenied($)).toBe(false)
+})
+
+test('gap: the window counts redacted text, so a secret that redacts to a short placeholder does not open a gap', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  const key = '-----BEGIN RSA PRIVATE KEY-----\n' + 'A'.repeat(WINDOW) + '\n-----END RSA PRIVATE KEY-----'
+  on('tool.call', ($: any, e: any) => (e.tool === 'WebFetch' ? { result: 'config follows\n' + key } : { result: 'ok' }))
+  await $.tool.call({ tool: 'WebFetch', url: 'https://example.com' })
+  // The credential screen taints this on its own, without needing an acknowledgement.
+  expect(await statusText($)).toContain('taint: ON')
+  expect(await statusText($)).not.toContain('acknowledgement required')
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' } })
+  expect(await gitPushDenied($)).toBe(false)
+})
+
+test('gap: a gap taint does not mark sensitive access, even when the credential score is the higher benign one', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05, 0.3)
+  await fetchBenign($, on, WINDOW + 1)
+  const status = await statusText($)
+  expect(status).toContain('taint: ON')
+  expect(status).toContain('sensitive access: off')
+})
+
+test('gap: an ordinary person prompt does not clear a gap taint in the default human-origin posture', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await fetchBenign($, on, WINDOW + 1)
+  for (const origin of [{ kind: 'composer' }, { kind: 'bridge' }]) {
+    await $.prompt.submit({ text: 'continue', origin })
+    expect(await gitPushDenied($)).toBe(true)
+    expect(await statusText($)).toContain('taint: ON')
+  }
+})
+
+test('gap: an sdk prompt does not clear a gap taint even with sdk_prompts_clear_taint', { options: { jev_base_url: 'https://jev.example', sdk_prompts_clear_taint: true } }, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await fetchBenign($, on, WINDOW + 1)
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'sdk' } })
+  expect(await gitPushDenied($)).toBe(true)
+})
+
+test('gap: a gap taint holds the sensitive-access leg too until acknowledged', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await fetchBenign($, on, WINDOW + 1)
+  await $.tool.call({ tool: 'Read', file_path: '/proj/.env' })
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' } })
+  const status = await statusText($)
+  expect(status).toContain('taint: ON')
+  expect(status).toContain('sensitive access: ON')
+  await composerClear($)
+  const after = await statusText($)
+  expect(after).toContain('taint: off')
+  expect(after).toContain('sensitive access: off')
+})
+
+test('gap: a /clear and a sticky-posture session end leave a gap taint held', JEV_STICKY, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  on('session.end', SESSION_END_BOTTOM)
+  await fetchBenign($, on, WINDOW + 1)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} })
+  expect(await gitPushDenied($)).toBe(true)
+  expect(await statusText($)).toContain('acknowledgement required')
+})
+
+test('gap: /barmkin-mod-clear-taint from a person clears it and the answer says what was acknowledged', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  await fetchBenign($, on, WINDOW + 1)
+  const answer = await composerClear($)
+  expect(answer.text.split('\n')).toHaveLength(1)
+  expect(answer.text).toContain('taint posture was human-origin')
+  expect(answer.text).toContain('acknowledgement of content of ' + String(WINDOW + 1) + ' characters')
+  expect(answer.text).toContain('egress is re-enabled')
+  expect(await gitPushDenied($)).toBe(false)
+  const status = await statusText($)
+  expect(status).toContain('taint: off')
+  expect(status).not.toContain('acknowledgement required')
+})
+
+test('gap: /barmkin-mod-clear-taint also clears a gap taint in sticky posture', JEV_STICKY, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  await fetchBenign($, on, WINDOW + 1)
+  await composerClear($)
+  expect(await gitPushDenied($)).toBe(false)
+})
+
+test('gap: the bridge origin can acknowledge, and the next gap taint requires a new acknowledgement', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  const fetchOf = benignFetcher($, on)
+  await fetchOf(WINDOW + 1)
+  await $.command.run({ command: 'barmkin-mod-clear-taint', args: '', origin: { kind: 'bridge' } })
+  expect(await gitPushDenied($)).toBe(false)
+  await fetchOf(WINDOW + 1)
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' } })
+  expect(await gitPushDenied($)).toBe(true)
+})
+
+test('gap: an unstamped, plugin or peer origin cannot acknowledge a gap taint', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  await fetchBenign($, on, WINDOW + 1)
+  for (const origin of [undefined, { kind: 'plugin' }, { kind: 'peer' }, { kind: 'sdk' }]) {
+    const answer = await $.command.run({ command: 'barmkin-mod-clear-taint', args: '', origin })
+    expect(answer.text).toContain('nothing was cleared')
+    expect(await gitPushDenied($)).toBe(true)
+  }
+})
+
+test('gap: an sdk origin acknowledges only when sdk_prompts_clear_taint is on', { options: { jev_base_url: 'https://jev.example', sdk_prompts_clear_taint: true } }, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  await fetchBenign($, on, WINDOW + 1)
+  await $.command.run({ command: 'barmkin-mod-clear-taint', args: '', origin: { kind: 'sdk' } })
+  expect(await gitPushDenied($)).toBe(false)
+})
+
+test('gap: the plugin origin still clears an ordinary taint', async ($, on) => {
+  await taintViaFetch($, on)
+  await $.command.run({ command: 'barmkin-mod-clear-taint', args: '', origin: { kind: 'plugin' } })
+  expect(await gitPushDenied($)).toBe(false)
+})
+
+test('gap: an injection in over-window content keeps its own taint reason and still needs the acknowledgement', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('tool.call', ($: any, e: any) => (e.tool === 'WebFetch' ? { result: INJECTION + ' ' + 'a'.repeat(WINDOW) } : { result: 'ok' }))
+  await $.tool.call({ tool: 'WebFetch', url: 'https://example.com' })
+  const status = await statusText($)
+  expect(status).toContain('taint: ON (content scored')
+  expect(status).toContain('acknowledgement required')
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' } })
+  expect(await gitPushDenied($)).toBe(true)
+})
+
+test('gap: a taint that was already held for another reason still needs the acknowledgement once a gap lands', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  let body = 'ok'
+  on('tool.call', () => ({ result: body }))
+  await $.tool.call({ tool: 'Skill', skill: 'lint' })
+  const before = await statusText($)
+  expect(before).toContain('taint: ON (skill "lint" was loaded)')
+  expect(before).not.toContain('acknowledgement required')
+  body = 'a'.repeat(WINDOW + 1)
+  await $.tool.call({ tool: 'mcp__docs__search', query: 'x' })
+  const after = await statusText($)
+  expect(after).toContain('taint: ON (skill "lint" was loaded)')
+  expect(after).toContain('acknowledgement required')
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' } })
+  expect(await gitPushDenied($)).toBe(true)
+  await composerClear($)
+  expect(await gitPushDenied($)).toBe(false)
+})
+
+test('gap: it applies when the classifier is unreachable or the breaker is open', JEV, async ($, on) => {
+  on('http.fetch', () => ({ value: { ok: false, status: 503, text: '' } }))
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  const fetchOf = benignFetcher($, on)
+  for (let i = 0; i < 3; i++) await fetchOf(100)
+  expect(await statusText($)).toContain('classifier breaker: open')
+  expect(await statusText($)).toContain('taint: off')
+  await fetchOf(WINDOW + 1)
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' } })
+  expect(await gitPushDenied($)).toBe(true)
+  expect(await statusText($)).toContain('acknowledgement required')
+})
+
+test('gap: a result the classifier itself denies is withheld and needs no acknowledgement', JEV, async ($, on) => {
+  jevAnswers($, on, 0.95)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  const out = await fetchBenign($, on, WINDOW + 1)
+  expect(out.result).toContain('withheld this result')
+  expect(await statusText($)).not.toContain('acknowledgement required')
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' } })
+  expect(await gitPushDenied($)).toBe(false)
+})
+
+test('gap: content over the 16 KiB scan limit is still withheld without a taint or an acknowledgement', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  const out = await fetchBenign($, on, 20 * 1024)
+  expect(JSON.stringify(out)).toContain('16 KiB')
+  expect(await statusText($)).toContain('taint: off')
+})
+
+test('gap: the classifier payload stays cut at the window', JEV, async ($, on) => {
+  let sent = ''
+  on('http.fetch', (_$: any, e: any) => {
+    sent = JSON.parse(e.init.body).state.content
+    return { value: { ok: true, status: 200, text: noul(0.05) } }
+  })
+  await fetchBenign($, on, WINDOW * 2)
+  expect(sent).toHaveLength(WINDOW)
+})
+
+test('gap: short content with Jev configured is still classified and does not taint', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  const out = await fetchBenign($, on, 200)
+  expect(out.context).toBeUndefined()
+  expect(await gitPushDenied($)).toBe(false)
+})
+
+test('gap: short content the classifier scores as injection still taints, and a person prompt clears it', JEV, async ($, on) => {
+  jevAnswers($, on, 0.7)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await fetchBenign($, on, 200)
+  expect(await gitPushDenied($)).toBe(true)
+  expect(await statusText($)).not.toContain('acknowledgement required')
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' } })
+  expect(await gitPushDenied($)).toBe(false)
+})
+
+test('gap: an MCP result over the window taints the same way', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  on('tool.call', () => ({ result: 'b'.repeat(WINDOW + 1) }))
+  await $.tool.call({ tool: 'mcp__docs__search', query: 'x' })
+  expect(await statusText($)).toContain('acknowledgement required')
+})
+
+test('gap: denied calls tell Claude to have the user run the command, not to send a message', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  await fetchBenign($, on, WINDOW + 1)
+  const push = await $.tool.call({ tool: 'Bash', command: 'git push origin main' })
+  expect(push.deny).toContain('/barmkin-mod-clear-taint')
+  expect(push.deny).toContain('a new message does not clear it')
+  expect(push.deny).not.toContain('sends a new message')
+  const skill = await $.tool.call({ tool: 'Skill', skill: 'lint' })
+  expect(skill.deny).toContain('/barmkin-mod-clear-taint')
+  expect(skill.deny).not.toContain('Ask again after a new message')
+})
+
+test('gap: the HUD line says why and how to acknowledge, and goes away once acknowledged', JEV, async ($, on) => {
+  jevAnswers($, on, 0.05)
+  on('ui.render', BAND_BOTTOM)
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await fetchBenign($, on, WINDOW + 1)
+  for (const surface of HUD_SURFACES) {
+    const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
+    const line = (await ui.find({ type: 'Text', text: /TAINTED/ }))?.text
+    expect(line).toContain('unscreened content past the classifier window')
+    expect(line).toContain('run /barmkin-mod-clear-taint to acknowledge')
+    expect(line).toContain('messages and /clear do not')
+    expect(line).not.toContain('your next message')
+    expect(line).not.toContain('\n')
+    await ui.unmount()
+  }
+  const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface: 'terminal' })
+  await $.prompt.submit({ text: 'continue', origin: { kind: 'composer' } })
+  expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeDefined()
+  await composerClear($)
+  expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeUndefined()
+  await ui.unmount()
+})
+
+// ---------------------------------------------------------------------------
 // No SAST surface: an edit is not scanned or annotated, and no findings
 // command is registered.
 // ---------------------------------------------------------------------------

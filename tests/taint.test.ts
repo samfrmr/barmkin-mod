@@ -13,6 +13,8 @@ import {
   commandMayClearTaint,
   describeTaintClear,
   describeTaintBanner,
+  classifierGapReason,
+  CLASSIFIER_WINDOW_CHARS,
   DEFAULT_TAINT_THRESHOLDS,
 } from '../hooks/lib/taint'
 import {
@@ -390,4 +392,97 @@ test('inlineShellDenyReason denies an outward-effect command and a credential re
   expect(inlineShellDenyReason({ tool: 'Bash', input: { command: 'cat ~/.ssh/id_rsa' } })).toContain('credential path')
   expect(inlineShellDenyReason({ tool: 'Bash', input: { command: 'git status --short' } })).toBeNull()
   expect(inlineShellDenyReason({ tool: 'Bash', input: { command: 'gh pr diff 12' } })).toBeNull()
+})
+
+test('classifierGapReason is null without Jev, however long the content is', () => {
+  expect(classifierGapReason(false, CLASSIFIER_WINDOW_CHARS * 10)).toBeNull()
+  expect(classifierGapReason(false, null)).toBeNull()
+})
+
+test('classifierGapReason is null for redacted content that fits the window', () => {
+  expect(CLASSIFIER_WINDOW_CHARS).toBe(4000)
+  expect(classifierGapReason(true, 0)).toBeNull()
+  expect(classifierGapReason(true, 200)).toBeNull()
+  expect(classifierGapReason(true, CLASSIFIER_WINDOW_CHARS)).toBeNull()
+})
+
+test('classifierGapReason names the length and the window for content that does not fit', () => {
+  const reason = classifierGapReason(true, CLASSIFIER_WINDOW_CHARS + 1)
+  expect(reason).toContain('4001 characters')
+  expect(reason).toContain('4000-character window')
+  expect(reason).toContain('never classified')
+})
+
+test('classifierGapReason treats withheld redacted text as past the window', () => {
+  const reason = classifierGapReason(true, null)
+  expect(reason).toContain('4000-character window')
+  expect(reason).not.toContain('null')
+})
+
+test('commandMayClearTaint lets a plugin run clear an ordinary taint but not one that needs acknowledgement', () => {
+  expect(commandMayClearTaint({ kind: 'plugin' }, false)).toBe(true)
+  expect(commandMayClearTaint({ kind: 'plugin' }, false, false)).toBe(true)
+  expect(commandMayClearTaint({ kind: 'plugin' }, false, true)).toBe(false)
+})
+
+test('commandMayClearTaint lets a person acknowledge, and refuses every other origin', () => {
+  expect(commandMayClearTaint({ kind: 'composer' }, false, true)).toBe(true)
+  expect(commandMayClearTaint({ kind: 'bridge' }, false, true)).toBe(true)
+  expect(commandMayClearTaint({ kind: 'sdk' }, false, true)).toBe(false)
+  expect(commandMayClearTaint({ kind: 'sdk' }, true, true)).toBe(true)
+  for (const origin of [{ kind: 'peer' }, { kind: 'task-notification' }, {}, null, undefined]) {
+    expect(commandMayClearTaint(origin, true, true)).toBe(false)
+  }
+})
+
+test('describeTaintBanner for a taint needing acknowledgement names why and the command alone, in either posture', () => {
+  for (const posture of ['human-origin', 'sticky'] as const) {
+    const line = describeTaintBanner(posture, false, true)
+    expect(line).toContain('unscreened content past the classifier window')
+    expect(line).toContain('run /barmkin-mod-clear-taint to acknowledge')
+    expect(line).toContain('messages and /clear do not')
+    expect(line).not.toContain('next message')
+    expect(line).not.toContain('\n')
+  }
+  expect(describeTaintBanner('human-origin', true, true)).toContain('all outbound actions blocked')
+})
+
+test('describeTaintBanner is unchanged when no acknowledgement is required', () => {
+  expect(describeTaintBanner('human-origin', false, false)).toBe(describeTaintBanner('human-origin', false))
+  expect(describeTaintBanner('sticky', true, false)).toBe(describeTaintBanner('sticky', true))
+})
+
+test('describeTaintClear says what the acknowledgement covered', () => {
+  const line = describeTaintClear('human-origin', {
+    tainted: true,
+    taintReason: 'a long page',
+    sensitive: false,
+    sensitiveReason: null,
+    ackReason: 'content past the window',
+  })
+  expect(line).toContain('taint (a long page)')
+  expect(line).toContain('acknowledgement of content past the window')
+  expect(line).toContain('egress is re-enabled')
+  expect(line.split('\n')).toHaveLength(1)
+})
+
+test('decideEgress tells Claude a gap taint needs the user to run the command, not to send a message', () => {
+  const ack = { ...legs(true, false), ackRequired: true }
+  const denied = decideEgress(web, ack)
+  expect(denied.kind).toBe('deny')
+  if (denied.kind === 'deny') {
+    expect(denied.message).toContain('/barmkin-mod-clear-taint')
+    expect(denied.message).not.toContain('sends a new message')
+  }
+  const locked = decideEgress(web, { ...legs(true, true), ackRequired: true })
+  expect(locked.kind).toBe('deny')
+  if (locked.kind === 'deny') {
+    expect(locked.message).toContain('Rule of Two')
+    expect(locked.message).toContain('/barmkin-mod-clear-taint')
+  }
+})
+
+test('decideEgress keeps its message when no acknowledgement is required', () => {
+  const denied = decideEgress(web, legs(true, false))
+  if (denied.kind === 'deny') expect(denied.message).toContain('until the user sends a new message asking for this explicitly')
 })

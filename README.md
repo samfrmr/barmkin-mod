@@ -28,6 +28,8 @@ The gate recognises these outward effects:
 - Skill loads.
 - Writes to persistence surfaces: `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.mcp.json`, CI workflows, git hooks, shell rc files, `~/.ssh` and `~/.local/bin`.
 
+The classifier reads only the first 4,000 characters of a piece of content, after redaction. With Jev configured, untrusted content longer than that taints the session even when nothing in it looks like an injection, because the rest was never classified. This taint needs an explicit acknowledgement: a later message, `/clear` or compaction does not clear it, whatever `taint_clear` is set to, and only `/barmkin-mod-clear-taint` from a person does. Without Jev configured, the classifier is not claimed to have read anything, so length alone does not taint.
+
 Sensitive access (leg B) is set when a call touches a secret path such as `~/.ssh`, `~/.aws`, `.env` or `.git-credentials`, when a redaction rule fires on a tool result, or when the classifier reports credentials in the content.
 
 ## Requirements
@@ -66,7 +68,7 @@ At session start the mod runs a posture self-check and warns when:
 | Command | Description |
 |---|---|
 | `/barmkin-mod-status` | Show taint, circuit-breaker state and the last classifier verdict. |
-| `/barmkin-mod-clear-taint` | Clear the taint, only from a person's prompt. |
+| `/barmkin-mod-clear-taint` | Clear the taint, only from a person's prompt. The only way to clear a taint for content past the classifier's 4,000-character window. |
 
 A single red line above the prompt (`⚠ TAINTED: untrusted content active · ✖ outbound actions may be restricted · ↺ clear: …`) shows when the session is tainted, and names the clear path for the active `taint_clear` posture.
 
@@ -101,4 +103,5 @@ Guarding hooks fail closed: if one errors, the action is denied or the content w
 
 - The shell denylist can be evaded. Enable the Bash sandbox so its egress allowlist sits underneath it.
 - Content over 16 KiB is withheld, not scanned.
+- With Jev configured, the classifier sees only the first 4,000 characters of redacted content; longer content taints the session until acknowledged with `/barmkin-mod-clear-taint`.
 - Secret rules are a hand-maintained copy of barmkin's. Keep them in sync when barmkin changes.

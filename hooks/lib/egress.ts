@@ -199,6 +199,8 @@ export interface TrifectaLegs {
   sensitive: boolean // B
   untrustedReason: string | null
   sensitiveReason: string | null
+  // The taint needs a person's /barmkin-mod-clear-taint; a new message does not clear it.
+  ackRequired?: boolean
 }
 
 export type EgressVerdict =
@@ -209,6 +211,12 @@ export type EgressVerdict =
 function describeClasses(classes: readonly EgressClass[]): string {
   const text = classes.map((c) => c.description).join(', ')
   return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+function clearHint(legs: TrifectaLegs): string {
+  return legs.ackRequired
+    ? 'until the user runs /barmkin-mod-clear-taint to acknowledge it (a new message does not clear it).'
+    : 'until the user sends a new message.'
 }
 
 // Never returns an allow: a pass leaves the call to whatever else decided it.
@@ -229,7 +237,8 @@ export function decideEgress(classes: readonly EgressClass[], legs: TrifectaLegs
         (legs.sensitiveReason ?? 'unspecified') +
         '). ' +
         describeClasses(classes) +
-        ' is blocked, and so is every other egress path, until the user sends a new message.',
+        ' is blocked, and so is every other egress path, ' +
+        clearHint(legs),
     }
   }
 
@@ -244,7 +253,8 @@ export function decideEgress(classes: readonly EgressClass[], legs: TrifectaLegs
         untrusted +
         '. ' +
         describeClasses(denied) +
-        ' is blocked until the user sends a new message asking for this explicitly.',
+        ' is blocked ' +
+        (legs.ackRequired ? clearHint(legs) : 'until the user sends a new message asking for this explicitly.'),
     }
   }
 
