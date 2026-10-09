@@ -958,11 +958,15 @@ async function skillToolGuardCatch($: any, e: any, next: any) {
 // theme, so the panel matches how the session draws its own errors.
 const TAINT_COLOR = 'error'
 
+// The clear-session label's color: the theme's success key, green in every
+// theme, and a plain ASCII string so it draws in any terminal.
+const CLEAR_COLOR = 'success'
+const CLEAR_LABEL = 'Barmkin session guard active'
+
 async function hudHook($: any, e: any, next: any) {
   const { tainted: isTainted, ackReason } = await readTaint($)
   const isSensitive = await read($, sensitiveAccess)
   const verdict = await read($, lastVerdict)
-  if (!isTainted && !isSensitive && !verdict) return next(e)
 
   const { Box, Text } = $.ui.resolve(e)
   const breakerUntil = await read($, breakerOpenUntil)
@@ -986,8 +990,12 @@ async function hudHook($: any, e: any, next: any) {
 
   // next(e) may resolve to nothing if no other mod draws in the band, so
   // filter out a falsy child rather than assume an engine placeholder.
+  // A clear session shows one green label instead; the state line below
+  // appears only when there is state to report, as before.
+  const clearLabel = isTainted ? null : Text({ key: 'barmkin-mod-active', color: CLEAR_COLOR, children: [CLEAR_LABEL] })
+  const stateLine = isTainted || isSensitive || verdict ? Text({ children: [parts.join(' · ')] }) : null
   const theirs = await next(e)
-  return Box({ flexDirection: 'column', children: [theirs, banner, Text({ children: [parts.join(' · ')] })].filter(Boolean) })
+  return Box({ flexDirection: 'column', children: [theirs, banner, clearLabel, stateLine].filter(Boolean) })
 }
 
 async function clearTaintCommandHook($: any, e: any) {

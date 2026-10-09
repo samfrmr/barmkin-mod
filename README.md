@@ -70,7 +70,7 @@ At session start the mod runs a posture self-check and warns when:
 | `/barmkin-mod-status` | Show taint, circuit-breaker state and the last classifier verdict. |
 | `/barmkin-mod-clear-taint` | Clear the taint, only from a person's prompt. The only way to clear a taint for content past the classifier's 4,000-character window. |
 
-A single red line above the prompt (`⚠ TAINTED: untrusted content active · ✖ outbound actions may be restricted · ↺ clear: …`) shows when the session is tainted, and names the clear path for the active `taint_clear` posture.
+A clear session shows one green line above the prompt reading `Barmkin session guard active`. A single red line above the prompt (`⚠ TAINTED: untrusted content active · ✖ outbound actions may be restricted · ↺ clear: …`) shows when the session is tainted, and names the clear path for the active `taint_clear` posture.
 
 ## Layout
 

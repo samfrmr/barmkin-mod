@@ -793,6 +793,29 @@ test('HUD: with sensitive access also held, the line says all outbound actions a
   }
 })
 
+test('HUD: a clear session draws one green terminal-safe label and no taint warning', async ($, on) => {
+  on('ui.render', BAND_BOTTOM)
+  for (const surface of HUD_SURFACES) {
+    const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
+    const line = await ui.find({ type: 'Text', text: /Barmkin session guard active/ })
+    expect(line?.props.color).toBe('success')
+    expect(line?.text).toBe('Barmkin session guard active')
+    expect(line?.text).toMatch(/^[\x20-\x7E]+$/)
+    expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /taint:/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('HUD: a tainted session shows the red warning and not the green label', async ($, on) => {
+  on('ui.render', BAND_BOTTOM)
+  await taintViaFetch($, on)
+  const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface: 'terminal' })
+  expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Barmkin session guard active/ })).toBeUndefined()
+  await ui.unmount()
+})
+
 test('HUD: no panel while the session is clean, only the status line once a verdict is recorded', async ($, on) => {
   on('ui.render', BAND_BOTTOM)
   on('tool.call', () => ({ result: 'an ordinary page about gardening' }))
