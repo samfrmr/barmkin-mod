@@ -497,11 +497,12 @@ async function sessionStartHook($: any, e: any, next: any) {
     statusLines.push('barmkin-mod posture: ' + warning)
   }
 
-  if (statusLines.length > 0) {
+  // $.ui.status holds one line per plugin and draws a newline as U+FFFD, so each warning is its own transcript row via $.ui.log.
+  for (const line of statusLines) {
     try {
-      $.ui.status(statusLines.join(' | '))
+      $.ui.log(line)
     } catch {
-      // no status surface on this build; the commands below still register
+      // no log surface on this build; the commands below still register
     }
   }
 
