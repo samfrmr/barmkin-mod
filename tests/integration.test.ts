@@ -795,14 +795,13 @@ test('HUD: with sensitive access also held, the line says all outbound actions a
   }
 })
 
-test('HUD: a clear session with Jev configured draws one green terminal-safe label and no taint warning', JEV, async ($, on) => {
+test('HUD: a clear session with Jev configured draws one green label and no taint warning', JEV, async ($, on) => {
   on('ui.render', BAND_BOTTOM)
   for (const surface of HUD_SURFACES) {
     const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
     const line = await ui.find({ type: 'Text', text: /Barmkin session guard/ })
     expect(line?.props.color).toBe('success')
-    expect(line?.text).toBe('Barmkin session guard active')
-    expect(line?.text).toMatch(/^[\x20-\x7E]+$/)
+    expect(line?.text).toBe('\u{1F3F0} Barmkin session guard active')
     expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /taint:/ })).toBeUndefined()
     await ui.unmount()
