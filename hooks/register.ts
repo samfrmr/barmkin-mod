@@ -959,11 +959,11 @@ async function skillToolGuardCatch($: any, e: any, next: any) {
 const TAINT_COLOR = 'error'
 
 // The clear-session labels: the theme's success key (green) and warning key
-// (amber); the active label leads with a castle emoji. Green means Jev is
+// (amber); both labels lead with a castle emoji. Green means Jev is
 // configured and its breaker is closed; it does not claim any request
 // succeeded. Amber means Jev is not configured or its breaker is open.
 const CLEAR_ACTIVE = { color: 'success', label: '🏰 Barmkin session guard active' }
-const CLEAR_DEGRADED = { color: 'warning', label: 'Barmkin session guard degraded' }
+const CLEAR_DEGRADED = { color: 'warning', label: '🏰 Barmkin session guard degraded' }
 
 async function hudHook($: any, e: any, next: any) {
   const { tainted: isTainted, ackReason } = await readTaint($)
