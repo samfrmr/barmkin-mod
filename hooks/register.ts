@@ -958,10 +958,12 @@ async function skillToolGuardCatch($: any, e: any, next: any) {
 // theme, so the panel matches how the session draws its own errors.
 const TAINT_COLOR = 'error'
 
-// The clear-session label's color: the theme's success key, green in every
-// theme, and a plain ASCII string so it draws in any terminal.
-const CLEAR_COLOR = 'success'
-const CLEAR_LABEL = 'Barmkin session guard active'
+// The clear-session labels: the theme's success key (green) and warning key
+// (amber), as plain ASCII so they draw in any terminal. Green means Jev is
+// configured and its breaker is closed; it does not claim any request
+// succeeded. Amber means Jev is not configured or its breaker is open.
+const CLEAR_ACTIVE = { color: 'success', label: 'Barmkin session guard active' }
+const CLEAR_DEGRADED = { color: 'warning', label: 'Barmkin session guard degraded' }
 
 async function hudHook($: any, e: any, next: any) {
   const { tainted: isTainted, ackReason } = await readTaint($)
@@ -992,7 +994,8 @@ async function hudHook($: any, e: any, next: any) {
   // filter out a falsy child rather than assume an engine placeholder.
   // A clear session shows one green label instead; the state line below
   // appears only when there is state to report, as before.
-  const clearLabel = isTainted ? null : Text({ key: 'barmkin-mod-active', color: CLEAR_COLOR, children: [CLEAR_LABEL] })
+  const clear = getJevOptions(pluginOptions).baseUrl !== '' && !breakerOpen ? CLEAR_ACTIVE : CLEAR_DEGRADED
+  const clearLabel = isTainted ? null : Text({ key: 'barmkin-mod-active', color: clear.color, children: [clear.label] })
   const stateLine = isTainted || isSensitive || verdict ? Text({ children: [parts.join(' · ')] }) : null
   const theirs = await next(e)
   return Box({ flexDirection: 'column', children: [theirs, banner, clearLabel, stateLine].filter(Boolean) })

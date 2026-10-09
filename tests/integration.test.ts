@@ -598,6 +598,8 @@ test('a prompt that does not clear the taint is still redacted', async ($, on) =
 // ---------------------------------------------------------------------------
 
 const STICKY = { options: { taint_clear: 'sticky' } }
+const JEV = { options: { jev_base_url: 'https://jev.example' } }
+const JEV_STICKY = { options: { jev_base_url: 'https://jev.example', taint_clear: 'sticky' } }
 
 const gitPushDenied = async ($: any) => (await $.tool.call({ tool: 'Bash', command: 'git push origin main' })).deny !== undefined
 
@@ -793,11 +795,11 @@ test('HUD: with sensitive access also held, the line says all outbound actions a
   }
 })
 
-test('HUD: a clear session draws one green terminal-safe label and no taint warning', async ($, on) => {
+test('HUD: a clear session with Jev configured draws one green terminal-safe label and no taint warning', JEV, async ($, on) => {
   on('ui.render', BAND_BOTTOM)
   for (const surface of HUD_SURFACES) {
     const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
-    const line = await ui.find({ type: 'Text', text: /Barmkin session guard active/ })
+    const line = await ui.find({ type: 'Text', text: /Barmkin session guard/ })
     expect(line?.props.color).toBe('success')
     expect(line?.text).toBe('Barmkin session guard active')
     expect(line?.text).toMatch(/^[\x20-\x7E]+$/)
@@ -807,12 +809,38 @@ test('HUD: a clear session draws one green terminal-safe label and no taint warn
   }
 })
 
+test('HUD: a clear session without Jev configured draws the amber degraded label', async ($, on) => {
+  on('ui.render', BAND_BOTTOM)
+  for (const surface of HUD_SURFACES) {
+    const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface })
+    const line = await ui.find({ type: 'Text', text: /Barmkin session guard/ })
+    expect(line?.props.color).toBe('warning')
+    expect(line?.text).toBe('Barmkin session guard degraded')
+    expect(line?.text).toMatch(/^[\x20-\x7E]+$/)
+    await ui.unmount()
+  }
+})
+
+test('HUD: with Jev configured, an open classifier breaker turns the label amber degraded', JEV, async ($, on) => {
+  on('ui.render', BAND_BOTTOM)
+  on('http.fetch', () => ({ value: { ok: false, status: 503, text: '' } }))
+  const fetchOf = benignFetcher($, on)
+  for (let i = 0; i < 3; i++) await fetchOf(100)
+  expect(await statusText($)).toContain('classifier breaker: open')
+  const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface: 'terminal' })
+  const line = await ui.find({ type: 'Text', text: /Barmkin session guard/ })
+  expect(line?.props.color).toBe('warning')
+  expect(line?.text).toBe('Barmkin session guard degraded')
+  expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeUndefined()
+  await ui.unmount()
+})
+
 test('HUD: a tainted session shows the red warning and not the green label', async ($, on) => {
   on('ui.render', BAND_BOTTOM)
   await taintViaFetch($, on)
   const ui = await $.ui.mount({ ...ABOVE_PROMPT, surface: 'terminal' })
   expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /Barmkin session guard active/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Barmkin session guard/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -863,8 +891,6 @@ test('HUD: in sticky posture the panel stays after a message and goes away after
 // /barmkin-mod-clear-taint from a person clears that taint.
 // ---------------------------------------------------------------------------
 
-const JEV = { options: { jev_base_url: 'https://jev.example' } }
-const JEV_STICKY = { options: { jev_base_url: 'https://jev.example', taint_clear: 'sticky' } }
 const WINDOW = 4000
 
 const noul = (injection: number, credentials = 0.05) =>
