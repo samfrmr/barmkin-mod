@@ -73,7 +73,7 @@ At session start the mod runs a posture self-check and warns when:
 | `/barmkin-mod-findings` | Open the SAST findings pane. |
 | `/barmkin-mod-clear-taint` | Clear the taint, only from a person's prompt. |
 
-A red panel above the prompt shows when the session is tainted.
+A single red line above the prompt (`⚠ TAINTED: untrusted content active · ✖ outbound actions may be restricted · ↺ clear: …`) shows when the session is tainted, and names the clear path for the active `taint_clear` posture.
 
 ## Layout
 

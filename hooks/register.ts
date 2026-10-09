@@ -1086,7 +1086,7 @@ async function findingsPaneHook($: any, e: any, next: any) {
 const TAINT_COLOR = 'error'
 
 async function hudHook($: any, e: any, next: any) {
-  const { tainted: isTainted, reason } = await readTaint($)
+  const { tainted: isTainted } = await readTaint($)
   const isSensitive = await read($, sensitiveAccess)
   const verdict = await read($, lastVerdict)
   if (!isTainted && !isSensitive && !verdict) return next(e)
@@ -1100,22 +1100,14 @@ async function hudHook($: any, e: any, next: any) {
     parts.push(verdict.decision + ' p=' + verdict.probability.toFixed(2) + ' (' + verdict.model + ')')
   }
 
-  // A red panel for as long as the taint is held: what it means, what it
-  // restricts, and the clear path that works under the active posture.
+  // One red line for as long as the taint is held: untrusted content is
+  // active, what it restricts, and the clear path that works under the
+  // active posture.
   let banner = null
   if (isTainted) {
-    const text = describeTaintBanner(taintClearPosture(), reason, isSensitive)
     banner = Box({
       key: 'barmkin-mod-taint',
-      flexDirection: 'column',
-      borderStyle: 'round',
-      borderColor: TAINT_COLOR,
-      paddingX: 1,
-      children: [
-        Text({ color: TAINT_COLOR, bold: true, children: [text.headline] }),
-        Text({ color: TAINT_COLOR, children: [text.restriction] }),
-        Text({ color: TAINT_COLOR, children: [text.clearPath] }),
-      ],
+      children: [Text({ color: TAINT_COLOR, bold: true, children: [describeTaintBanner(taintClearPosture(), isSensitive)] })],
     })
   }
 
