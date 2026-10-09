@@ -1,7 +1,7 @@
 {
   "name": "barmkin-mod",
   "private": true,
-  "description": "Claude Code mods security layer: secret redaction, untrusted-content taint, MCP tool-poisoning guard, agent-to-agent firewall, SAST UI, and a Jev System One classifier gateway.",
+  "description": "Claude Code mods security layer: secret redaction, untrusted-content taint, MCP tool-poisoning guard, agent-to-agent firewall, and a Jev System One classifier gateway.",
   "scripts": {
     "validate": "claude plugin validate --strict .",
     "test": "claude plugin test"

@@ -3,12 +3,11 @@
 //
 // Fail-closed convention: a hook that guards (can deny/consume/withhold)
 // gets a `.catch` that denies on failure. A hook that's purely advisory
-// (SAST inline findings, the HUD) has none, so the documented no-catch
-// default applies: fail before `next()` skips the hook (the action
-// proceeds without our annotation), fail after `next()` leaves the result
-// as `next()` produced it. Neither path can loosen a decision someone else
-// already made -- these hooks only ever add a deny/consume/withhold on top,
-// never an allow.
+// (the HUD) has none, so the documented no-catch default applies: fail
+// before `next()` skips the hook (the action proceeds without our
+// annotation), fail after `next()` leaves the result as `next()` produced
+// it. Neither path can loosen a decision someone else already made --
+// these hooks only ever add a deny/consume/withhold on top, never an allow.
 //
 // `$` is only ever used as `$.namespace.method(...)` and only ever passed
 // to a function declared at this file's top level (never into an imported
@@ -62,7 +61,6 @@ import {
   type SystemOneParseResult,
 } from './lib/system-one-client'
 import { neutralizeDescription, parseMcpServerName, isAllowedServer } from './lib/mcp-guard'
-import { parseSemgrepJson, formatFindingsContext, worstSeverity, buildSemgrepCandidates } from './lib/sast'
 import { extractResultText, appendContext, withholdResult } from './lib/tool-result'
 import { meetsMinimumVersion, MIN_CLAUDE_CODE_VERSION } from './lib/version'
 import { checkPosture } from './lib/posture'
@@ -90,12 +88,6 @@ interface EgressRecord {
   at: number
 }
 
-interface SastEntry {
-  path: string
-  findings: Array<{ ruleId: string; severity: 'ERROR' | 'WARNING' | 'INFO'; message: string; line: number }>
-  suppressed: boolean
-}
-
 const tainted = atom({ plugin: 'barmkin-mod', key: 'tainted' }, false)
 const taintReason = atom({ plugin: 'barmkin-mod', key: 'taintReason' }, null as string | null)
 // Trifecta leg B (sensitive access); leg A is `tainted`, leg C is evaluated per call.
@@ -105,23 +97,11 @@ const lastEgress = atom({ plugin: 'barmkin-mod', key: 'lastEgress' }, null as Eg
 const lastVerdict = atom({ plugin: 'barmkin-mod', key: 'lastVerdict' }, null as Verdict | null)
 const breakerOpenUntil = atom({ plugin: 'barmkin-mod', key: 'breakerOpenUntil' }, 0)
 const breakerFailureCount = atom({ plugin: 'barmkin-mod', key: 'breakerFailureCount' }, 0)
-const sastFindingsByToolUse = atom(
-  { plugin: 'barmkin-mod', key: 'sastFindingsByToolUse' },
-  {} as Record<string, SastEntry>,
-)
-const semgrepUnavailable = atom({ plugin: 'barmkin-mod', key: 'semgrepUnavailable' }, false)
 
 // Redaction placeholder counters. Not security state (no secret value is
 // ever kept, only a per-category count for unique labels), so a plain
 // module variable is fine; it resets on reload like any other.
 const redactionCounters: Record<string, number> = {}
-
-// Resolved semgrep command cache. Not security state -- just avoids
-// re-probing the filesystem/PATH on every edit -- so a plain module
-// variable is fine; it resets on reload like any other. `null` means "not
-// probed yet", `''` means "probed, nothing found".
-let probedHomeDir: string | null = null
-let probedSemgrepCommand: string | null = null
 
 const BREAKER_FAILURE_THRESHOLD = 3
 const BREAKER_COOLDOWN_MS = 60_000
@@ -483,7 +463,6 @@ async function sessionStartHook($: any, e: any, next: any) {
   }
 
   try {
-    await $.command.register({ name: 'barmkin-mod-findings', description: 'Open the barmkin-mod SAST findings pane' })
     await $.command.register({ name: 'barmkin-mod-status', description: 'Show barmkin-mod taint, breaker, and last classifier verdict' })
     await $.command.register({
       name: 'barmkin-mod-clear-taint',
@@ -789,113 +768,6 @@ async function redactionCatch($: any, e: any, next: any) {
 }
 
 // ---------------------------------------------------------------------------
-// SAST UI (semgrep). Advisory: no .catch, so a failure here never blocks an
-// edit (the file is already written by the time this hook's work starts).
-// ---------------------------------------------------------------------------
-
-// `semgrep` resolved by bare name only ever sees whatever PATH the Claude
-// Code process itself started with, which routinely omits a per-user
-// install location (pipx/`pip install --user` under ~/.local/bin) that the
-// operator's own interactive shell sees just fine. `$HOME` isn't otherwise
-// available to a hook, so it's read via a plain (non-login, no profile
-// sourcing, so no stray stdout to confuse this with a failure) `sh -c`
-// probe; `sh` itself is expected to always be on the process's PATH even
-// when `semgrep` isn't. Cached for the session so this only runs once.
-async function resolveHomeDir($: any): Promise<string> {
-  if (probedHomeDir !== null) return probedHomeDir
-  let home = ''
-  try {
-    const proc = await $.process.run(['sh', '-c', 'printf %s "$HOME"'], { timeoutMs: 2000 })
-    home = proc.exitCode === 0 ? proc.stdout.trim() : ''
-  } catch {
-    home = ''
-  }
-  probedHomeDir = home
-  return home
-}
-
-// Resolves and caches a runnable semgrep command for the session: the
-// configured path (re-checked every call, since `/config` can change it
-// without a reload), else the first of `buildSemgrepCandidates` that
-// actually runs, else null if none do. `null` is cached too (as `''`) so a
-// genuinely missing semgrep doesn't re-probe the filesystem on every edit.
-async function resolveSemgrepCommand($: any): Promise<string | null> {
-  const configured = typeof pluginOptions.sast_semgrep_path === 'string' ? pluginOptions.sast_semgrep_path.trim() : ''
-  if (configured) return configured
-
-  if (probedSemgrepCommand !== null) return probedSemgrepCommand || null
-
-  const home = await resolveHomeDir($)
-  for (const candidate of buildSemgrepCandidates(home)) {
-    try {
-      await $.process.run([candidate, '--version'], { timeoutMs: 5000 })
-      probedSemgrepCommand = candidate
-      return candidate
-    } catch {
-      continue
-    }
-  }
-  probedSemgrepCommand = ''
-  return null
-}
-
-async function sastHook($: any, e: any, next: any) {
-  const result = await next(e)
-  if (!result || result.deny || result.isError) return result
-
-  const filePath = typeof e.file_path === 'string' ? e.file_path : undefined
-  if (!filePath) return result
-
-  const command = await resolveSemgrepCommand($)
-  if (!command) {
-    await update($, semgrepUnavailable, () => true)
-    return result
-  }
-
-  let proc: { exitCode: number; stdout: string; stderr: string }
-  try {
-    proc = await $.process.run([command, '--config=auto', '--json', '--quiet', filePath], { timeoutMs: 30000 })
-  } catch {
-    await update($, semgrepUnavailable, () => true)
-    return result // semgrep failed to start even though it ran at probe time; stay silent
-  }
-  await update($, semgrepUnavailable, () => false)
-  // semgrep exits 1 when findings exist and 0 when clean; anything else is
-  // a tool error, not a scan result.
-  if (proc.exitCode !== 0 && proc.exitCode !== 1) return result
-
-  const findings = parseSemgrepJson(proc.stdout)
-  if (findings.length === 0) return result
-
-  const key = typeof e.tool_use_id === 'string' ? e.tool_use_id : filePath
-  await update($, sastFindingsByToolUse, (current: Record<string, SastEntry>) => ({
-    ...current,
-    [key]: {
-      path: filePath,
-      findings: findings.map((f) => ({ ruleId: f.ruleId, severity: f.severity, message: f.message, line: f.line })),
-      suppressed: false,
-    },
-  }))
-  // No $.ui.invalidate needed: writing a $.state value redraws every site
-  // that reads it (findingsPaneHook, via `read`).
-
-  const worst = worstSeverity(findings)
-  if (worst === 'ERROR' && pluginOptions.sast_hold_on_high_severity === true) {
-    try {
-      await $.ui.ask(
-        'barmkin-mod: semgrep found a high-severity issue in ' + filePath + '. Acknowledge to continue.',
-        ['Acknowledge'],
-      )
-    } catch {
-      // dismissed, or a claude -p run with nobody to ask; the finding is
-      // still fed to Claude as context below either way
-    }
-  }
-
-  return appendContext(result, formatFindingsContext(findings))
-}
-
-// ---------------------------------------------------------------------------
 // Agent-to-agent firewall.
 // ---------------------------------------------------------------------------
 
@@ -1034,52 +906,8 @@ async function skillToolGuardCatch($: any, e: any, next: any) {
 }
 
 // ---------------------------------------------------------------------------
-// Classifier explanation surface: HUD band + findings pane.
+// Classifier explanation surface: HUD band.
 // ---------------------------------------------------------------------------
-
-async function findingsPaneHook($: any, e: any, next: any) {
-  if (e.requestId !== 'barmkin-mod-findings') return next(e)
-  const { Box, Text, Button } = $.ui.resolve(e)
-  const findingsMap = await read($, sastFindingsByToolUse)
-  const entries = Object.entries(findingsMap).filter(([, v]) => !(v as SastEntry).suppressed)
-
-  if (entries.length === 0) {
-    const unavailable = await read($, semgrepUnavailable)
-    const message = unavailable
-      ? 'barmkin-mod: semgrep not found / not runnable -- SAST findings are unavailable this session.'
-      : 'No SAST findings yet this session.'
-    return Box({ flexDirection: 'column', children: [Text({ children: [message] })] })
-  }
-
-  const rows = entries.flatMap(([key, entry]) =>
-    (entry as SastEntry).findings.map((f, i) =>
-      Box({
-        key: key + '-' + i,
-        flexDirection: 'row',
-        columnGap: 1,
-        children: [
-          Text({ children: ['[' + f.severity + ']'] }),
-          Text({ children: [(entry as SastEntry).path + ':' + f.line + ' ' + f.message] }),
-          Button({
-            key: 'suppress-' + key + '-' + i,
-            label: 'suppress',
-            plain: true,
-            onPress: async () => {
-              // Suppresses the whole entry (all findings from this edit),
-              // since suppression is tracked per tool_use_id, not per line.
-              await update($, sastFindingsByToolUse, (current: Record<string, SastEntry>) => ({
-                ...current,
-                [key]: { ...current[key], suppressed: true },
-              }))
-            },
-          }),
-        ],
-      }),
-    ),
-  )
-
-  return Box({ flexDirection: 'column', children: rows })
-}
 
 // The tainted-session panel's color: the theme's error key, red in every
 // theme, so the panel matches how the session draws its own errors.
@@ -1115,11 +943,6 @@ async function hudHook($: any, e: any, next: any) {
   // filter out a falsy child rather than assume an engine placeholder.
   const theirs = await next(e)
   return Box({ flexDirection: 'column', children: [theirs, banner, Text({ children: [parts.join(' · ')] })].filter(Boolean) })
-}
-
-async function findingsCommandHook($: any) {
-  await $.ui.open({ id: 'barmkin-mod-findings', title: 'barmkin-mod: SAST findings', closeOnEscape: true })
-  return {}
 }
 
 async function clearTaintCommandHook($: any, e: any) {
@@ -1173,7 +996,6 @@ export function register(on: any, options: Record<string, unknown>) {
   on('tool.call', { tool: ['Bash', 'PowerShell', 'WebFetch', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'] }, egressGuardHook).catch(egressGuardCatch)
   on('tool.call', { tool: ['WebFetch', 'WebSearch'] }, webFetchTaintHook).catch(taintScreenCatch)
   on('tool.call', { tool: 'Read' }, readTaintHook).catch(taintScreenCatch)
-  on('tool.call', { tool: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] }, sastHook)
 
   on('tool.call', { tool: 'Skill' }, skillToolGuardHook).catch(skillToolGuardCatch)
   on('tool.check', { tool: ['Bash', 'PowerShell'] }, toolCheckGuardHook).catch(toolCheckGuardCatch)
@@ -1184,9 +1006,7 @@ export function register(on: any, options: Record<string, unknown>) {
   on('session.receive', sessionReceiveHook).catch(sessionReceiveCatch)
   on('session.send', sessionSendHook).catch(sessionSendCatch)
   on('agent.spawn', agentSpawnHook).catch(agentSpawnCatch)
-  on('ui.render', { component: 'Pane' }, findingsPaneHook)
   on('ui.render', { component: 'AbovePrompt' }, hudHook)
-  on('command.run', { command: 'barmkin-mod-findings' }, findingsCommandHook)
   on('command.run', { command: 'barmkin-mod-status' }, statusCommandHook)
   on('command.run', { command: 'barmkin-mod-clear-taint' }, clearTaintCommandHook)
 }

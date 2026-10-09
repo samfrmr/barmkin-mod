@@ -2,11 +2,11 @@
   "name": "barmkin-mod",
   "displayName": "Barmkin Mod",
   "version": "0.1.0",
-  "description": "Claude Code mods security layer: secret redaction, untrusted-content taint with a Rule-of-Two egress gate, skill inline-shell mediation guard, MCP tool-poisoning guard, skill-content screen, agent-to-agent firewall, SAST findings UI, and a Jev System One classifier gateway with an explanation surface.",
+  "description": "Claude Code mods security layer: secret redaction, untrusted-content taint with a Rule-of-Two egress gate, skill inline-shell mediation guard, MCP tool-poisoning guard, skill-content screen, agent-to-agent firewall, and a Jev System One classifier gateway with an explanation surface.",
   "author": { "name": "samfrmr" },
   "repository": "https://github.com/samfrmr/barmkin-mod",
   "license": "MIT",
-  "keywords": ["security", "mods", "redaction", "sast", "classifier"],
+  "keywords": ["security", "mods", "redaction", "classifier"],
   "types": "./types/index.d.ts",
   "userConfig": {
     "jev_base_url": {
@@ -32,12 +32,6 @@
       "description": "Comma-separated MCP server names allowed to run tools (parsed from mcp__<server>__<tool>). Leave empty to allow all servers (audit-only, no enforcement).",
       "multiple": true
     },
-    "sast_hold_on_high_severity": {
-      "type": "boolean",
-      "title": "Hold on high-severity SAST findings",
-      "description": "When a semgrep ERROR-severity finding appears after an edit, ask the user to acknowledge it before the turn continues. When off, findings are advisory only (shown inline and fed to Claude as context).",
-      "default": false
-    },
     "sdk_prompts_clear_taint": {
       "type": "boolean",
       "title": "Let SDK prompts clear the taint",
@@ -50,11 +44,6 @@
       "description": "human-origin (default): a prompt a person sent clears the untrusted-content taint and the sensitive-access flag. sticky: they hold across human prompts, because the injected text is still in the context window, and clear only on /compact, /clear, or the /barmkin-mod-clear-taint command.",
       "default": "human-origin",
       "options": ["human-origin", "sticky"]
-    },
-    "sast_semgrep_path": {
-      "type": "string",
-      "title": "semgrep binary path",
-      "description": "Absolute path to the semgrep binary, for when it isn't resolvable by bare name on the Claude Code process's PATH (e.g. a pipx/`pip install --user` binary under ~/.local/bin). Leave empty to auto-probe common install locations before falling back to bare `semgrep`."
     }
   }
 }

@@ -46,28 +46,6 @@ declare module 'claude-code' {
       // classifier calls and the HUD's "semantic check unavailable" state.
       breakerOpenUntil: number
       breakerFailureCount: number
-
-      // SAST findings pane state, keyed by tool_use_id of the edit that
-      // produced them.
-      sastFindingsByToolUse: Record<
-        string,
-        {
-          path: string
-          findings: Array<{
-            ruleId: string
-            severity: 'ERROR' | 'WARNING' | 'INFO'
-            message: string
-            line: number
-          }>
-          suppressed: boolean
-        }
-      >
-
-      // True once no candidate semgrep binary (configured path, common
-      // install locations, bare name) could be run this session. Drives the
-      // findings pane's "semgrep not found / not runnable" notice so the
-      // pane doesn't just render empty.
-      semgrepUnavailable: boolean
     }
   }
 }

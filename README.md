@@ -15,7 +15,6 @@ A security layer for Claude Code, packaged as a Claude Code mods plugin. It reda
 | **MCP tool-poisoning guard** | Strips instruction-like sentences from MCP tool descriptions and enforces an optional server allowlist. |
 | **Skill guards** | Denies skill inline shell (`` !`command` ``) while mediation applies, and screens skill bodies and the skill listing. |
 | **Agent-to-agent firewall** | Screens inbound peer messages, blocks outbound messages that contain secrets, and refuses to spawn subagents while the session is tainted. |
-| **SAST findings** | Runs [semgrep](https://semgrep.dev) on files after `Edit`, `Write`, `MultiEdit` and `NotebookEdit`, and shows findings inline and in a pane. |
 | **Jev System One classifier** | An optional remote classifier that can only raise suspicion, never lower it. |
 | **Invisible-text scrub** | Strips ANSI escapes, bidi overrides, zero-width characters and the Unicode Tags block from tool results, descriptions and messages. |
 
@@ -35,7 +34,6 @@ Sensitive access (leg B) is set when a call touches a secret path such as `~/.ss
 
 - Claude Code **2.1.287 or later**. The mod checks at session start and warns on older builds.
 - Node 22 for validation and tests.
-- `semgrep` on `PATH` for the SAST features. Optional.
 
 ## Install
 
@@ -60,8 +58,6 @@ At session start the mod runs a posture self-check and warns when:
 | `jev_model` | `jev-1.13.0` | Pinned Jev model id. Must match the `jev-1.13` pattern. |
 | `jev_api_key` | none | Bearer credential. Stored in secure credential storage and never logged. |
 | `mcp_server_allowlist` | empty | Comma-separated MCP server names allowed to run tools. Empty allows all (audit only). |
-| `sast_hold_on_high_severity` | `false` | Ask for acknowledgement on a semgrep `ERROR` finding before the turn continues. |
-| `sast_semgrep_path` | auto-probe | Absolute path to `semgrep` when it isn't on the process `PATH`. |
 | `taint_clear` | `human-origin` | `human-origin`: a person's prompt clears the taint. `sticky`: it holds until `/compact`, `/clear` or `/barmkin-mod-clear-taint`. |
 | `sdk_prompts_clear_taint` | `false` | Let SDK prompts clear the taint. For headless lanes (`claude -p`, the Agent SDK) only. |
 
@@ -70,7 +66,6 @@ At session start the mod runs a posture self-check and warns when:
 | Command | Description |
 |---|---|
 | `/barmkin-mod-status` | Show taint, circuit-breaker state and the last classifier verdict. |
-| `/barmkin-mod-findings` | Open the SAST findings pane. |
 | `/barmkin-mod-clear-taint` | Clear the taint, only from a person's prompt. |
 
 A single red line above the prompt (`⚠ TAINTED: untrusted content active · ✖ outbound actions may be restricted · ↺ clear: …`) shows when the session is tainted, and names the clear path for the active `taint_clear` posture.
@@ -85,7 +80,7 @@ hooks/lib/              pure, unit-tested logic
   mcp-guard.ts          tool-description hardening
   skill-guard.ts        skill body and listing guards
   system-one-client.ts  classifier wire format
-  sast.ts, posture.ts   semgrep parsing, posture checks
+  posture.ts            posture checks
 tests/                  one test file per lib module, plus integration
 .claude-plugin/         plugin manifest and option schema
 ```
@@ -100,7 +95,7 @@ npm test           # claude plugin test
 
 CI runs both on every push to `main` and on pull requests. `@anthropic-ai/claude-code` is pinned in `package.json` to the version floor, so CI is the real verification surface.
 
-Guarding hooks fail closed: if one errors, the action is denied or the content withheld. Advisory hooks, such as SAST and the HUD, fail open and leave the result unchanged.
+Guarding hooks fail closed: if one errors, the action is denied or the content withheld. Advisory hooks, such as the HUD, fail open and leave the result unchanged.
 
 ## Limits
 

@@ -833,3 +833,21 @@ test('HUD: in sticky posture the panel stays after a message and goes away after
   expect(await ui.find({ key: 'barmkin-mod-taint' })).toBeUndefined()
   await ui.unmount()
 })
+
+// ---------------------------------------------------------------------------
+// No SAST surface: an edit is not scanned or annotated, and no findings
+// command is registered.
+// ---------------------------------------------------------------------------
+
+test('an Edit result passes through unchanged, with no scan context added', async ($, on) => {
+  on('tool.call', () => ({ result: 'The file /tmp/x/app.js has been updated.' }))
+  const out = await $.tool.call({ tool: 'Edit', file_path: '/tmp/x/app.js', old_string: 'a', new_string: 'b' })
+  expect(out.deny).toBeUndefined()
+  expect(out.result).toBe('The file /tmp/x/app.js has been updated.')
+  expect(out.context).toBeUndefined()
+})
+
+test('/barmkin-mod-findings is not a command this mod answers', async ($) => {
+  const answer = await $.command.run({ command: 'barmkin-mod-findings', args: '' }).catch(() => undefined)
+  expect(answer?.text).toBeUndefined()
+})
