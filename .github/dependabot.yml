@@ -1,0 +1,25 @@
+# Dependabot proposes version updates as ordinary pull requests, which CI then
+# judges. It holds no merge authority; an update PR is a prompt to look, not an
+# approval. package.json pins @anthropic-ai/claude-code to the version floor
+# this plugin targets, so a bump of it is reviewed against the README's
+# "Version floor" section rather than merged because it is green.
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "pip"
+    directory: "/tests/workflows"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
