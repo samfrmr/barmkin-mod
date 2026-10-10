@@ -22,9 +22,13 @@ import {
   WITHHELD_TEXT,
   containsAnySecret,
   containsSecretInEitherView,
-  exceedsResultBudget,
+  measureResult,
   exceedsScanLimit,
+  exceedsScreenedLimit,
+  SCREENED_LIMIT_REASON,
+  PAGING_ADVICE,
 } from './lib/redaction'
+import { scannedPrefix, prefixNotice } from './lib/scanned-prefix'
 import { scrubInvisible } from './lib/scrub'
 import {
   composeScreen,
@@ -384,11 +388,11 @@ async function screenContent(
   toolUseId: string | undefined,
 ): Promise<ScreenOutcome> {
   const raw = text
-  if (exceedsScanLimit(raw)) {
+  if (exceedsScreenedLimit(raw)) {
     return {
       decision: 'deny',
       tainted: false,
-      reason: 'it is longer than the 16 KiB scan limit',
+      reason: SCREENED_LIMIT_REASON,
       question: 'injection',
       probability: 0,
       model: 'heuristic',
@@ -531,7 +535,7 @@ async function promptSubmitHook($: any, e: any, next: any) {
   }
 
   if (typeof e.text !== 'string') return next(e)
-  if (exceedsScanLimit(e.text)) {
+  if (exceedsScreenedLimit(e.text)) {
     return { drop: 'barmkin-mod: your message is longer than the 16 KiB scan limit, so it was withheld' }
   }
   // Detection runs on the scrubbed view; the original text is forwarded unless a secret is redacted.
@@ -582,6 +586,13 @@ async function toolDescribeHook($: any, e: any, next: any) {
   return { ...current, description: cleaned }
 }
 
+// What a withheld untrusted result tells Claude. A withhold for size alone is
+// not a danger, so it points to paging; any other reason sends Claude back to
+// the person.
+function withheldMessage(what: string, reason: string): string {
+  return 'barmkin-mod: withheld ' + what + ' (' + reason + '). ' + (reason === SCREENED_LIMIT_REASON ? PAGING_ADVICE : 'Ask the user before retrying.')
+}
+
 async function mcpGuardHook($: any, e: any, next: any) {
   const serverName = parseMcpServerName(e.tool)
   if (serverName) {
@@ -601,7 +612,7 @@ async function mcpGuardHook($: any, e: any, next: any) {
   if (!text) return result
   const verdict = await screenContent($, text, 'mcp:' + (serverName ?? e.tool), e.tool_use_id)
   if (verdict.decision === 'deny') {
-    return withholdResult(result, 'barmkin-mod: withheld this MCP result (' + verdict.reason + '). Ask the user before retrying.')
+    return withholdResult(result, withheldMessage('this MCP result', verdict.reason))
   }
   if (verdict.tainted) return appendContext(result, UNTRUSTED_CONTENT_WARNING)
   return result
@@ -667,7 +678,7 @@ async function webFetchTaintHook($: any, e: any, next: any) {
   if (!text) return result
   const verdict = await screenContent($, text, 'fetch:' + e.tool, e.tool_use_id)
   if (verdict.decision === 'deny') {
-    return withholdResult(result, 'barmkin-mod: withheld this result (' + verdict.reason + '). Ask the user before retrying.')
+    return withholdResult(result, withheldMessage('this result', verdict.reason))
   }
   if (verdict.tainted) return appendContext(result, UNTRUSTED_CONTENT_WARNING)
   return result
@@ -691,7 +702,7 @@ async function readTaintHook($: any, e: any, next: any) {
   if (!text) return result
   const verdict = await screenContent($, text, 'read:' + e.file_path, e.tool_use_id)
   if (verdict.decision === 'deny') {
-    return withholdResult(result, "barmkin-mod: withheld this file's content (" + verdict.reason + '). Ask the user before retrying.')
+    return withholdResult(result, withheldMessage("this file's content", verdict.reason))
   }
   // appendContext only adds a sibling `context` array alongside whatever
   // `result` already is -- it never touches `result`'s own shape -- so this
@@ -734,11 +745,45 @@ function imagePayloadWithholdReason(base64: string): string | null {
   return containsAnySecret(bytes, REDACTION_RULES) ? 'this Read image payload contains a secret-shaped value' : null
 }
 
+// A result shows a scanned prefix only when its payload is text: cutting a
+// base64 image or PDF leaves something that is not one. A result with no
+// `result` has nothing to cut.
+function prefixable(result: any): boolean {
+  if (!('result' in result)) return false
+  const payload = result.result
+  if (!payload || typeof payload !== 'object') return true
+  const binary = payload.type === 'image' || payload.type === 'pdf' || 'base64' in payload || (!!payload.file && typeof payload.file === 'object' && 'base64' in payload.file)
+  return !binary
+}
+
+// Whether an injection screen covers this tool's result: an MCP tool, WebFetch,
+// WebSearch, and a Read outside cwd. Each withholds at the 16 KiB screened limit
+// inside `next(e)`, so a result that reaches the redaction hook over that limit
+// came from a tool with no screen, or from a Read whose screen could not run
+// (the cwd lookup failed, which is treated as outside). This hook keeps those
+// at the screened limit too, so raising the redaction cap never lets unscreened
+// untrusted text in.
+async function screenedSurface($: any, e: any): Promise<boolean> {
+  if (typeof e.tool !== 'string') return true
+  if (parseMcpServerName(e.tool) || e.tool === 'WebFetch' || e.tool === 'WebSearch') return true
+  if (e.tool !== 'Read' || typeof e.file_path !== 'string') return false
+  try {
+    return isOutsideCwd(e.file_path, await $.session.cwd())
+  } catch {
+    return true
+  }
+}
+
 async function redactionHook($: any, e: any, next: any) {
   const result = await next(e)
   if (!result || result.deny) return result
-  if (exceedsResultBudget(result)) {
-    return { deny: 'barmkin-mod: this tool result is larger than the redaction scan budget, so it was withheld' }
+  // Within the screened limits nothing depends on which tool this is. Over them,
+  // only a tool that no screen covers gets the larger redaction limits.
+  let size = measureResult(result, true)
+  if (size !== 'within' && !(await screenedSurface($, e))) size = measureResult(result)
+  const showPrefix = size === 'long-string' && prefixable(result)
+  if (size === 'over-total' || (size === 'long-string' && !showPrefix)) {
+    return { deny: 'barmkin-mod: this tool result is larger than the redaction scan budget, so it was withheld. ' + PAGING_ADVICE }
   }
 
   const imageBase64 = readImageBase64(e, result)
@@ -748,6 +793,8 @@ async function redactionHook($: any, e: any, next: any) {
   let changed = false
   let hiddenCount = 0
   let redactionHits = 0
+  let noSafeCut = false
+  const cuts = new Map<string, string>()
   const next_: any = { ...result }
 
   // Every string inside the result is rewritten in place, whatever its
@@ -757,8 +804,23 @@ async function redactionHook($: any, e: any, next: any) {
   // Core's model-visible rendering in `text` is redacted the same way.
   // Scrubbed before redaction: a zero-width character spliced into a
   // token shouldn't be able to help it dodge a secret pattern either.
+  // A string over the per-string cap, in a result that may show one, is
+  // replaced by its scanned prefix, and its invisible-text count covers the
+  // whole string.
   const redactValue = (value: unknown): unknown => {
     if (typeof value === 'string') {
+      if (showPrefix && exceedsScanLimit(value)) {
+        const prefix = scannedPrefix(value, REDACTION_RULES, redactionCounters)
+        if (prefix === null) {
+          noSafeCut = true
+          return value
+        }
+        hiddenCount += prefix.hiddenCount
+        redactionHits += prefix.redactedCount
+        cuts.set(prefix.cut + '/' + prefix.total, prefixNotice(prefix.cut, prefix.total))
+        changed = true
+        return prefix.shown
+      }
       const scrubbed = scrubInvisible(value)
       hiddenCount += scrubbed.hiddenCount
       const { text: redacted, redactedCount } = redactInEitherView(value)
@@ -792,6 +854,10 @@ async function redactionHook($: any, e: any, next: any) {
     next_.context = redactedContext
   }
 
+  if (noSafeCut) {
+    return { deny: 'barmkin-mod: this tool result is larger than the redaction scan budget and has no safe place to cut it, so it was withheld. ' + PAGING_ADVICE }
+  }
+
   // A redaction hit means a credential-shaped value just passed through this
   // session: leg B of the trifecta. Written before returning (and queued with
   // the taint writes) so the very next egress call sees it.
@@ -801,7 +867,23 @@ async function redactionHook($: any, e: any, next: any) {
 
   void taintForScrub($, hiddenCount, 'tool:' + (typeof e.tool === 'string' && parseMcpServerName(e.tool) ? 'mcp' : e.tool))
 
-  return changed ? next_ : result
+  if (!showPrefix) return changed ? next_ : result
+
+  // A fresh answer, without core's `ref` and `text`: core then validates the
+  // record against the tool's output schema and maps it for the model itself,
+  // rather than reusing its own rendering of the full output. An errored
+  // result has no output schema, so it keeps its error text.
+  const fresh: any = { result: next_.result, context: [...(next_.context ?? []), ...cuts.values()] }
+  if (result.isError) {
+    fresh.isError = true
+    if ('text' in next_) fresh.text = next_.text
+  }
+  // Read's line count describes the content it now carries.
+  const file = fresh.result?.file
+  if (cuts.size > 0 && file && typeof file.content === 'string' && typeof file.numLines === 'number') {
+    fresh.result = { ...fresh.result, file: { ...file, numLines: file.content.split('\n').length } }
+  }
+  return fresh
 }
 
 async function redactionCatch($: any, e: any, next: any) {
@@ -820,7 +902,7 @@ async function sessionReceiveHook($: any, e: any, next: any) {
 
   const scrubbed = scrubInvisible(e.text)
   void taintForScrub($, scrubbed.hiddenCount, 'an inbound peer message')
-  if (exceedsScanLimit(e.text)) {
+  if (exceedsScreenedLimit(e.text)) {
     return { consumed: 'barmkin-mod: withheld an inbound message (it is longer than the 16 KiB scan limit)' }
   }
 
@@ -837,7 +919,7 @@ async function sessionReceiveCatch($: any, e: any, next: any) {
 
 async function sessionSendHook($: any, e: any, next: any) {
   if (typeof e.text !== 'string') return next(e)
-  if (exceedsScanLimit(e.text)) {
+  if (exceedsScreenedLimit(e.text)) {
     return { isDelivered: false, reason: 'barmkin-mod: message withheld, it is longer than the 16 KiB scan limit' }
   }
   // Detection runs on the scrubbed view; the original text is delivered when no secret is found.
@@ -893,7 +975,7 @@ async function skillPromptHook($: any, e: any, next: any) {
 
   const { text: redacted, redactedCount } = redactInEitherView(text)
   if (redacted === WITHHELD_TEXT) {
-    return { ...(current ?? e), text: skillBodyWithheldText('the redacted body exceeds the 16 KiB scan limit') }
+    return { ...(current ?? e), text: skillBodyWithheldText('the redacted body exceeds the 256 KiB scan limit') }
   }
   if (redactedCount > 0) {
     $.ui.log('barmkin-mod: redacted ' + redactedCount + ' likely secret(s) from skill ' + e.skill)
