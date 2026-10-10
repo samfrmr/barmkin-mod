@@ -95,7 +95,7 @@ npm run validate   # claude plugin validate --strict .
 npm test           # claude plugin test
 ```
 
-CI runs both on every push to `main` and on pull requests. `@anthropic-ai/claude-code` is pinned in `package.json` to the version floor, so CI is the real verification surface.
+CI runs both on every push to `main` and on pull requests, alongside workflow tests, a gitleaks secret scan (`.gitleaks.toml`) and CodeQL. `@anthropic-ai/claude-code` is pinned in `package.json` to the version floor, so CI is the real verification surface.
 
 Guarding hooks fail closed: if one errors, the action is denied or the content withheld. Advisory hooks, such as the HUD, fail open and leave the result unchanged.
 
