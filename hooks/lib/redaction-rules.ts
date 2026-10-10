@@ -1,3 +1,5 @@
+import { bearerSpans, genericKeyEnvSpans, jwtSpans, pemSpans, type SpanScanner } from './linear-scanners'
+
 // Secret-detection patterns. Shaped like barmkin's rules.yaml "Secrets"
 // section (name/pattern/example) plus jev.go's pre-egress secretPatterns,
 // unioned into one list. Kept here as TS literals rather than a parsed
@@ -10,6 +12,12 @@ export interface RedactionRule {
   name: string
   // Must carry the "g" flag so redactText can replace every match.
   pattern: RegExp
+  // An exact linear-time stand-in for `pattern`, for the four rules whose
+  // regexes are expensive on crafted input (see linear-scanners.ts). When
+  // present, every scan uses it instead of the regex; the regex stays as the
+  // rule's specification and as the reference tests/linear-scanners.test.ts
+  // compares it with.
+  scan?: SpanScanner
   category: string
   example: string
 }
@@ -18,12 +26,14 @@ export const REDACTION_RULES: RedactionRule[] = [
   {
     name: 'private-key-block',
     pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+    scan: pemSpans,
     category: 'private-key',
     example: '-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----',
   },
   {
     name: 'jwt',
     pattern: /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g,
+    scan: jwtSpans,
     category: 'jwt',
     example: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
   },
@@ -64,6 +74,7 @@ export const REDACTION_RULES: RedactionRule[] = [
     name: 'generic-key-env-assignment',
     pattern:
       /\b(?=(?<name>[A-Z0-9_]*(?:(?<=_)KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|_PAT(?![A-Z]))[A-Z0-9_]*))\k<name>(?<!_FILE|_PATH|_DIR|_URL)[ \t]*=[ \t]*(?:(?<q>['"])(?!\$|\[REDACTED:)(?![^'"\s]*\$\{)(?=[^'"\s]*\d)[^'"\s]{16,}\k<q>(?![ \t]*[-+*\/%.[(])|(?!\$)(?=[^\s'"`()[\]{}.;,]*\d)[^\s'"`()[\]{}.;,]{16,}(?![^\s;,'"`]))/gi,
+    scan: genericKeyEnvSpans,
     category: 'env-key',
     example: 'AWS_SECRET_KEY=abcdef0123456789',
   },
@@ -185,6 +196,7 @@ export const REDACTION_RULES: RedactionRule[] = [
   {
     name: 'bearer-header',
     pattern: /\bBearer\s+(?=[A-Za-z0-9._~+\/-]*\d)[A-Za-z0-9._~+\/-]{20,}=*/gi,
+    scan: bearerSpans,
     category: 'bearer-token',
     example: 'Bearer eyJhbGciOiJIUzI1NiJ9.abc.def',
   },

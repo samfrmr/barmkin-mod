@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { REDACTION_RULES } from '../hooks/lib/redaction-rules'
-import { redactText, redactInEitherView, classifierInput, containsAnySecret, containsSecretInEitherView, exceedsResultBudget, exceedsScanLimit } from '../hooks/lib/redaction'
+import { redactText, redactInEitherView, classifierInput, containsAnySecret, containsSecretInEitherView, exceedsResultBudget, exceedsScanLimit, measureResult } from '../hooks/lib/redaction'
 import { scrubInvisible } from '../hooks/lib/scrub'
 
 test('redacts every example vector with a numbered placeholder', () => {
@@ -260,11 +260,11 @@ test('corpus: known gaps this rule set does not close', () => {
 
 test('withholds text longer than the scan limit as a whole', () => {
   const secret = 'API_KEY=abcdef0123456789'
-  const { text, redactedCount, categories } = redactText(secret + ' ' + 'x'.repeat(20000), REDACTION_RULES, {})
+  const { text, redactedCount, categories } = redactText(secret + ' ' + 'x'.repeat(256 * 1024), REDACTION_RULES, {})
   expect(text).not.toContain('abcdef0123456789')
   expect(redactedCount).toBe(1)
   expect(categories).toEqual(['oversized'])
-  expect(containsAnySecret('plain words '.repeat(3000), REDACTION_RULES)).toBe(false)
+  expect(containsAnySecret(secret + ' ' + 'x'.repeat(256 * 1024), REDACTION_RULES)).toBe(false)
 })
 
 test('leaves a path named after a credential keyword alone', () => {
@@ -312,7 +312,7 @@ test('helper-level: a zero-width character before a key is seen on the original 
 
 test('helper-level: a two-pass redaction whose placeholders push the text past the scan limit is withheld, not collapsed', () => {
   const unit = 'SECRET=abcdefgh12345678;'
-  const input = unit.repeat(680)
+  const input = unit.repeat(10900)
   expect(exceedsScanLimit(input)).toBe(false)
   const out = redactInEitherView(input, REDACTION_RULES, { 'env-key': 100000 })
   expect(out.text).not.toContain('[REDACTED:oversized')
@@ -323,7 +323,7 @@ test('helper-level: a two-pass redaction whose placeholders push the text past t
 
 test('helper-level: the classifier receives the redacted text for ordinary input, and nothing for a withheld marker', () => {
   expect(classifierInput('plain page text', REDACTION_RULES, {})).toBe('plain page text')
-  expect(classifierInput('SECRET=abcdefgh12345678;'.repeat(680), REDACTION_RULES, { 'env-key': 100000 })).toBeNull()
+  expect(classifierInput('SECRET=abcdefgh12345678;'.repeat(10900), REDACTION_RULES, { 'env-key': 100000 })).toBeNull()
 })
 
 test('helper-level: a secret hidden behind a zero-width character is refused on both views', () => {
@@ -370,19 +370,28 @@ test('redacts a JWT that follows a separator or a hyphen', () => {
 })
 
 test('counts a result and its model-visible text mirror once against the aggregate budget', () => {
-  const chunk = 'x'.repeat(14 * 1024)
+  const chunk = 'x'.repeat(200 * 1024)
   expect(exceedsResultBudget({ result: [chunk, chunk, chunk, chunk], text: chunk })).toBe(false)
+  expect(measureResult({ result: [chunk, chunk, chunk, chunk], text: chunk })).toBe('within')
 })
 
-test('withholds a tool result whose strings together exceed the aggregate budget', () => {
-  expect(exceedsResultBudget({ text: 'x'.repeat(40 * 1024) })).toBe(true)
-  expect(exceedsResultBudget(['x'.repeat(14 * 1024), { stdout: 'y'.repeat(14 * 1024) }, 'z'.repeat(14 * 1024), 'w'.repeat(14 * 1024)])).toBe(false)
-  expect(exceedsResultBudget(Array.from({ length: 5 }, () => 'x'.repeat(14 * 1024)))).toBe(true)
+test('classifies a tool result against the per-string cap and the aggregate budget', () => {
+  const chunk = 'x'.repeat(200 * 1024)
+  // One string over the per-string cap, the strings together within the total.
+  expect(measureResult({ text: 'x'.repeat(300 * 1024) })).toBe('long-string')
+  expect(exceedsResultBudget({ text: 'x'.repeat(300 * 1024) })).toBe(true)
+  expect(measureResult({ result: 'x'.repeat(600 * 1024) })).toBe('long-string')
+  // Every string within the cap, together over the total.
+  expect(measureResult([chunk, { stdout: chunk }, chunk, chunk])).toBe('within')
+  expect(measureResult(Array.from({ length: 6 }, () => chunk))).toBe('over-total')
+  expect(exceedsResultBudget(Array.from({ length: 6 }, () => chunk))).toBe(true)
+  // Over the total takes precedence, since a prefix does not shrink the rest.
+  expect(measureResult({ result: 'x'.repeat(2 * 1024 * 1024) })).toBe('over-total')
 })
 
 test('still scans text right at the scan limit', () => {
   const head = 'API_KEY=abcdef0123456789 '
-  const atLimit = head + 'x'.repeat(16 * 1024 - head.length)
+  const atLimit = head + 'x'.repeat(256 * 1024 - head.length)
   const { text, redactedCount, categories } = redactText(atLimit, REDACTION_RULES, {})
   expect(text).not.toContain('abcdef0123456789')
   expect(redactedCount).toBe(1)

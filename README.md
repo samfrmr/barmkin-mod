@@ -78,6 +78,8 @@ A clear session shows one line directly beneath the mode-switcher line under the
 hooks/register.ts       hook wiring and all runtime ($) calls
 hooks/lib/              pure, unit-tested logic
   redaction*.ts         secret rules and redaction
+  linear-scanners.ts    linear-time scanners for the four rules whose regexes backtrack
+  scanned-prefix.ts     the span-safe prefix shown for an oversize tool result
   taint.ts, egress.ts   injection screen, Rule-of-Two gate
   mcp-guard.ts          tool-description hardening
   skill-guard.ts        skill body and listing guards
@@ -102,6 +104,9 @@ Guarding hooks fail closed: if one errors, the action is denied or the content w
 ## Limits
 
 - The shell denylist can be evaded. Enable the Bash sandbox so its egress allowlist sits underneath it.
-- Content over 16 KiB is withheld, not scanned.
+- Size limits. Every redaction rule runs in time linear in the text, so a tool result is scanned whole up to 256 KiB per string and 1 MiB per result. Past those limits:
+  - A string over 256 KiB in a result that no injection screen covers (Bash, Grep, Glob, a Read inside the working directory) shows a scanned prefix of about 12 KiB, cut at a line or delimiter that no secret match crosses, followed by a note with the shown and total character counts and how to page: `Read` with `offset` and `limit`, or a narrower command. The hidden part is never shown and never matched, and invisible text anywhere in the string still counts toward the taint threshold. If no safe cut exists, the result is withheld.
+  - A result whose strings together pass 1 MiB, and a Read image past about 190 KiB, are withheld, since a prefix of either is not useful.
+- Untrusted content is withheld over 16 KiB, never cut: web fetches and searches, MCP results, reads outside the working directory, skill bodies, peer messages, your prompts and outbound messages. The classifier reads 4,000 characters of such content, so more text would be mostly unscreened. The withhold message says it is a size limit and tells Claude to fetch the content in smaller pieces rather than ask you.
 - With Jev configured, the classifier sees only the first 4,000 characters of redacted content; longer content taints the session until acknowledged with `/barmkin-mod-clear-taint`.
 - Secret rules are a hand-maintained copy of barmkin's. Keep them in sync when barmkin changes.

@@ -129,7 +129,7 @@ test('withholds a prompt over the scan limit instead of replacing it with a plac
 })
 
 test('withholds a Read image whose base64 payload is over the scan budget', async ($, on) => {
-  on('tool.call', () => ({ result: { type: 'image', base64: btoa('\x89PNG\r\n\x1a\n' + 'A'.repeat(20 * 1024)) } }))
+  on('tool.call', () => ({ result: { type: 'image', base64: btoa('\x89PNG\r\n\x1a\n' + 'A'.repeat(200 * 1024)) } }))
   const out = await $.tool.call({ tool: 'Read', file_path: 'screenshot.png' })
   expect(out.deny).toContain('redaction scan budget')
 })
@@ -1255,4 +1255,186 @@ test('an Edit result passes through unchanged, with no scan context added', asyn
 test('/barmkin-mod-findings is not a command this mod answers', async ($) => {
   const answer = await $.command.run({ command: 'barmkin-mod-findings', args: '' }).catch(() => undefined)
   expect(answer?.text).toBeUndefined()
+})
+
+// ---------------------------------------------------------------------------
+// Oversize tool results: a scanned prefix where no injection screen covers the
+// result, the old withhold where one does.
+// ---------------------------------------------------------------------------
+
+const KIB = 1024
+const OVER_CAP = 300 * KIB
+const logLines = (size: number) => {
+  let out = ''
+  for (let i = 0; out.length < size; i++) out += 'line ' + i + ' of the build log, nothing to see here\n'
+  return out.slice(0, size)
+}
+const noteFor = (out: any) => (out.context ?? []).find((c: string) => c.includes('too large to scan whole'))
+
+test('a Bash result just over the string cap comes back as a scanned prefix with a paging note', async ($, on) => {
+  const stdout = 'export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n' + logLines(OVER_CAP) + 'TAIL_MARKER_NOT_SHOWN\n'
+  on('tool.call', () => ({
+    result: { stdout, stderr: '', interrupted: false, isImage: false, noOutputExpected: false },
+    text: stdout,
+    ref: 7,
+  }))
+  const out = await $.tool.call({ tool: 'Bash', command: 'make' })
+  expect(out.deny).toBeUndefined()
+  expect(Object.keys(out.result).sort()).toEqual(['interrupted', 'isImage', 'noOutputExpected', 'stderr', 'stdout'])
+  expect(out.result.stdout.length).toBeLessThanOrEqual(13 * KIB)
+  expect(out.result.stdout.length).toBeGreaterThan(5 * KIB)
+  expect(out.result.stdout).toContain('[REDACTED:aws-key#1]')
+  expect(out.result.stdout).not.toContain('AKIAIOSFODNN7EXAMPLE')
+  expect(out.result.stdout).not.toContain('TAIL_MARKER_NOT_SHOWN')
+  // A fresh answer: core's own rendering of the full output is not reused.
+  expect(out.text).not.toContain('TAIL_MARKER_NOT_SHOWN')
+  expect(out.text ?? '').not.toContain('AKIAIOSFODNN7EXAMPLE')
+  const note = noteFor(out)
+  expect(note).toContain('of ' + stdout.length + ' characters')
+  expect(note).toContain('offset and limit')
+})
+
+test('a string result over the cap is also cut, and the note names the sizes', async ($, on) => {
+  const text = logLines(400 * KIB)
+  on('tool.call', () => ({ result: text }))
+  const out = await $.tool.call({ tool: 'Grep', pattern: 'line' })
+  expect(typeof out.result).toBe('string')
+  expect(out.result.length).toBeLessThanOrEqual(13 * KIB)
+  expect(text.startsWith(out.result)).toBe(true)
+  expect(noteFor(out)).toContain('of ' + text.length + ' characters')
+})
+
+test('an in-project Read over the cap returns a prefix, keeps its record shape and fixes numLines', async ($, on) => {
+  on('session.cwd', () => ({ value: '/proj' }))
+  const content = logLines(OVER_CAP)
+  on('tool.call', () => ({
+    result: { type: 'text', file: { filePath: '/proj/build.log', content, numLines: 7000, startLine: 1, totalLines: 7000 } },
+  }))
+  const out = await $.tool.call({ tool: 'Read', file_path: '/proj/build.log' })
+  expect(out.deny).toBeUndefined()
+  expect(out.result.type).toBe('text')
+  expect(out.result.file.filePath).toBe('/proj/build.log')
+  expect(out.result.file.totalLines).toBe(7000)
+  expect(out.result.file.startLine).toBe(1)
+  expect(content.startsWith(out.result.file.content)).toBe(true)
+  expect(out.result.file.content.length).toBeLessThanOrEqual(13 * KIB)
+  expect(out.result.file.numLines).toBe(out.result.file.content.split('\n').length)
+  expect(noteFor(out)).toContain('Read a file with offset and limit')
+})
+
+test('a result under the new per-string cap is returned whole, as before the cap was raised', async ($, on) => {
+  const stdout = logLines(200 * KIB)
+  on('tool.call', () => ({ result: { stdout, stderr: '' }, text: stdout }))
+  const out = await $.tool.call({ tool: 'Bash', command: 'make' })
+  expect(out.result.stdout).toBe(stdout)
+  expect(noteFor(out)).toBeUndefined()
+})
+
+test('a secret in a string under the cap is redacted wherever it sits', async ($, on) => {
+  const stdout = logLines(150 * KIB) + 'API_KEY=abcdef0123456789abcd\n' + logLines(50 * KIB)
+  on('tool.call', () => ({ result: { stdout, stderr: '' } }))
+  const out = await $.tool.call({ tool: 'Bash', command: 'make' })
+  expect(out.result.stdout).not.toContain('abcdef0123456789abcd')
+  expect(out.result.stdout).toContain('[REDACTED:env-key#1]')
+  expect(out.result.stdout.length).toBeGreaterThan(190 * KIB)
+})
+
+test('an oversize result with no safe cut is withheld with a paging hint', async ($, on) => {
+  on('tool.call', () => ({ result: { stdout: 'SECRET='.repeat(50 * KIB), stderr: '' } }))
+  const out = await $.tool.call({ tool: 'Bash', command: 'cat blob' })
+  expect(out.deny).toContain('redaction scan budget')
+  expect(out.deny).toContain('offset and limit')
+})
+
+test('a result whose strings together exceed the 1 MiB total is withheld, not cut', async ($, on) => {
+  on('tool.call', () => ({ result: { stdout: logLines(240 * KIB), stderr: logLines(240 * KIB), extra: [logLines(240 * KIB), logLines(240 * KIB), logLines(240 * KIB)] } }))
+  const out = await $.tool.call({ tool: 'Bash', command: 'make' })
+  expect(out.deny).toContain('redaction scan budget')
+})
+
+test('a Read image over the cap is withheld, never cut', async ($, on) => {
+  on('tool.call', () => ({ result: { type: 'image', base64: btoa('\x89PNG\r\n\x1a\n' + 'A'.repeat(300 * KIB)) } }))
+  const out = await $.tool.call({ tool: 'Read', file_path: 'screenshot.png' })
+  expect(out.deny).toContain('redaction scan budget')
+})
+
+test('a 20 KiB WebFetch result is still withheld, with a paging hint and no prefix', async ($, on) => {
+  const page = logLines(20 * KIB)
+  on('tool.call', () => ({ result: page }))
+  const out = await $.tool.call({ tool: 'WebFetch', url: 'https://example.com' })
+  const shown = JSON.stringify(out)
+  expect(shown).toContain('withheld this result')
+  expect(shown).toContain('16 KiB')
+  expect(shown).toContain('smaller pieces')
+  expect(shown).not.toContain('Ask the user')
+  expect(shown).not.toContain('line 10 of the build log')
+  expect(out.context).toBeUndefined()
+})
+
+test('an oversize MCP result and a Read outside cwd are still withheld, whatever their size', async ($, on) => {
+  on('session.cwd', () => ({ value: '/proj' }))
+  on('tool.call', () => ({ result: logLines(300 * KIB) }))
+  const mcp = await $.tool.call({ tool: 'mcp__github__get_file' })
+  expect(JSON.stringify(mcp)).toContain('withheld this MCP result')
+  expect(JSON.stringify(mcp)).not.toContain('line 10 of the build log')
+  const outside = await $.tool.call({ tool: 'Read', file_path: '/etc/big.log' })
+  expect(JSON.stringify(outside)).toContain("withheld this file's content")
+  expect(JSON.stringify(outside)).not.toContain('line 10 of the build log')
+})
+
+test('invisible text past the cut of an oversize result still taints the session', async ($, on) => {
+  const tags = Array.from({ length: 40 }, (_, i) => String.fromCodePoint(0xe0041 + (i % 20))).join('')
+  const stdout = logLines(100 * KIB) + tags + logLines(250 * KIB)
+  on('tool.call', ($, e) => (e.tool === 'Bash' && e.command === 'cat big' ? { result: { stdout, stderr: '' } } : { result: 'ok' }))
+  const out = await $.tool.call({ tool: 'Bash', command: 'cat big' })
+  expect(out.result.stdout.length).toBeLessThanOrEqual(13 * KIB)
+  expect(noteFor(out)).toBeDefined()
+  const status = await $.command.run({ command: 'barmkin-mod-status', args: '' })
+  expect(status.text).toContain('taint: ON')
+  expect(status.text).toContain('40 invisible character(s)')
+})
+
+test('a credential in the shown prefix of an oversize result sets the sensitive-access leg', async ($, on) => {
+  const stdout = 'token ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII\n' + logLines(OVER_CAP)
+  on('tool.call', ($, e) => (e.tool === 'Bash' && e.command === 'cat big' ? { result: { stdout, stderr: '' } } : { result: 'ok' }))
+  await $.tool.call({ tool: 'Bash', command: 'cat big' })
+  const status = await $.command.run({ command: 'barmkin-mod-status', args: '' })
+  expect(status.text).toContain('sensitive access: ON')
+})
+
+test('an errored oversize result keeps its error flag and error text, cut', async ($, on) => {
+  const text = 'Exit code 2\n' + logLines(OVER_CAP)
+  on('tool.call', () => ({ result: text, text, isError: true }))
+  const out = await $.tool.call({ tool: 'Bash', command: 'make' })
+  expect(out.isError).toBe(true)
+  expect(out.text.length).toBeLessThanOrEqual(13 * KIB)
+  expect(out.text.startsWith('Exit code 2')).toBe(true)
+})
+
+test('an in-project Read between 16 KiB and the cap is returned whole', async ($, on) => {
+  on('session.cwd', () => ({ value: '/proj' }))
+  const content = logLines(100 * KIB)
+  on('tool.call', () => ({ result: { type: 'text', file: { filePath: '/proj/build.log', content, numLines: 2000, startLine: 1, totalLines: 2000 } } }))
+  const out = await $.tool.call({ tool: 'Read', file_path: '/proj/build.log' })
+  expect(out.result.file.content).toBe(content)
+  expect(out.result.file.numLines).toBe(2000)
+  expect(out.context).toBeUndefined()
+})
+
+test('a Read whose cwd lookup fails stays at the 16 KiB limit, since its screen could not run', async ($, on) => {
+  on('session.cwd', () => {
+    throw new Error('no session')
+  })
+  on('tool.call', () => ({ result: { type: 'text', file: { filePath: '/etc/big.log', content: logLines(100 * KIB), numLines: 2000, startLine: 1, totalLines: 2000 } } }))
+  const out = await $.tool.call({ tool: 'Read', file_path: '/etc/big.log' })
+  expect(out.deny).toContain('redaction scan budget')
+})
+
+test('a Read outside cwd between 16 KiB and the cap is withheld by its screen, with a paging hint', async ($, on) => {
+  on('session.cwd', () => ({ value: '/proj' }))
+  on('tool.call', () => ({ result: { type: 'text', file: { filePath: '/etc/big.log', content: logLines(100 * KIB), numLines: 2000, startLine: 1, totalLines: 2000 } } }))
+  const out = await $.tool.call({ tool: 'Read', file_path: '/etc/big.log' })
+  expect(JSON.stringify(out)).toContain("withheld this file's content")
+  expect(JSON.stringify(out)).toContain('smaller pieces')
+  expect(JSON.stringify(out)).not.toContain('line 10 of the build log')
 })
