@@ -1,0 +1,51 @@
+# Secret-scan configuration for the `secret-scan` job in .github/workflows/ci.yml.
+#
+# It extends gitleaks' default ruleset. This repository is a secret-redaction layer, so
+# its tests and rule documentation carry credential-shaped strings on purpose: every
+# allowance below names one synthetic value (provider documentation examples and
+# test fixtures that were never credentials). Each is matched by the value itself, not
+# by path, rule or commit, so a real credential committed beside a fixture is still
+# caught.
+#
+# Adding an entry here is a reviewed change to a security control, like a workflow edit.
+# An allowance names a value that is demonstrably synthetic, with the file that uses it.
+# tests/workflows/test_ci_workflows.py rejects an allowance that names a path, a rule or
+# a commit.
+
+title = "barmkin-mod secret scan"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generic key/assignment fixtures in tests/redaction.test.ts, tests/integration.test.ts and hooks/lib/redaction-rules.ts"
+regexes = [
+  '''^abcdefgh12345678$''',
+  '''^abcdef0123456789$''',
+  '''^API_KEY=abcdef0123456789$''',
+  '''^abcdef0123456789abcd$''',
+  '''^abcdef0123456789abcd\.secretTAIL99$''',
+  '''^abc123def456ghi789jk$''',
+  '''^xK9mP2qL7vN4wR8tY3uI$''',
+  '''^f3b9c0d8a7e6152493ab$''',
+]
+
+[[allowlists]]
+description = "Stripe's documented example key (hooks/lib/redaction-rules.ts, tests/redaction.test.ts)"
+regexes = ['''^sk_live_4eC39HqLyjWDarjtT1zdp7dc$''']
+
+[[allowlists]]
+description = "Placeholder-shaped GitHub token (hooks/lib/redaction-rules.ts, tests/redaction.test.ts)"
+regexes = ['''^ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII$''']
+
+[[allowlists]]
+description = "AWS documentation example key with its last character changed (tests/redaction.test.ts)"
+regexes = ['''^AKIAIOSFODNN7EXAMPLF$''']
+
+[[allowlists]]
+description = "Slack documentation example webhook URL (hooks/lib/redaction-rules.ts, tests/redaction.test.ts)"
+regexes = ['''^https://hooks\.slack\.com/services/T00000000/B00000000/X{24}$''']
+
+[[allowlists]]
+description = "jwt.io example token (hooks/lib/redaction-rules.ts, tests/redaction.test.ts)"
+regexes = ['''^eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U$''']

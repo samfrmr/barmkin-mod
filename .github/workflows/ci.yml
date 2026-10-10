@@ -5,13 +5,20 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only token for every job; no job in this file needs more. CodeQL, which
+# must write security events, lives in codeql.yml.
+permissions:
+  contents: read
+
 jobs:
   validate-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
 
@@ -29,3 +36,58 @@ jobs:
 
       - name: claude plugin test
         run: npm test
+
+  # The workflow files and .gitleaks.toml are security controls, so they are
+  # parsed and checked rather than trusted to review. PyYAML is a dev
+  # dependency of this test only (tests/workflows/requirements-dev.txt).
+  workflow-tests:
+    name: workflow tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: python -m pip install -r tests/workflows/requirements-dev.txt
+
+      - name: Pytest
+        run: python -m pytest tests/workflows
+
+  # Pinned and checksum-verified, because a scanner fetched unpinned into a job
+  # that reads the whole history is the supply-chain weakness this job exists to
+  # catch elsewhere. .gitleaks.toml extends the default ruleset and allows only
+  # the synthetic fixtures of this redaction layer, by value and not by path.
+  # Full history, so a credential committed and then deleted in the same pull
+  # request is still found.
+  secret-scan:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks (pinned, checksum-verified)
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${archive}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}" gitleaks
+
+      - name: Scan history for secrets
+        run: |
+          "${RUNNER_TEMP}/gitleaks" git --no-banner --redact --exit-code 1 \
+            --config .gitleaks.toml .
