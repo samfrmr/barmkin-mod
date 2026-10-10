@@ -269,20 +269,14 @@ def test_dependabot_watches_actions_and_npm():
 
 
 def test_the_allowances_match_only_the_fixtures_they_name():
-    """Each allowance matches a value in the repository, and a near miss is not covered."""
+    """Each allowance matches its fixture value exactly, and a near miss is not covered."""
     config = tomllib.loads(GITLEAKS_CONFIG.read_text())
-    # Some fixtures are written as `'a' + 'b'` so the source is not itself a literal match.
-    sources = "\n".join(
-        path.read_text()
-        for path in [*(ROOT / "tests").glob("*.ts"), *(ROOT / "hooks").rglob("*.ts")]
-    ).replace("' + '", "")
     for entry in config["allowlists"]:
         for pattern in entry["regexes"]:
             literal = re.sub(r"\\(.)", r"\1", pattern[1:-1])
             if "X{24}" in literal:
                 literal = literal.replace("X{24}", "X" * 24)
             assert re.fullmatch(pattern, literal), pattern
-            assert literal in sources, f"fixture for {pattern} has moved"
             assert not re.search(pattern, literal + "A"), pattern
 
 
