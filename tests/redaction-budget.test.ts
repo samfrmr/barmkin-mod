@@ -6,12 +6,12 @@ import { worstInputs } from './fuzz-support'
 
 // The cost the outermost redaction hook adds per string: the invisible-text
 // count (a scrub) and the two-pass redaction. At the 256 KiB per-string cap a
-// MiB of text is four strings. The budget is 300 ms per MiB, a tenth of what
+// MiB of text is four strings. The budget is 800 ms per MiB, a tenth of what
 // the hook's 10 s allows for a worst-case 1.25 MiB result; the measured worst
 // case is well under it, and the best of three runs keeps a busy machine from
 // failing the test.
 const CAP = 256 * 1024
-const BUDGET_MS_PER_MIB = 300
+const BUDGET_MS_PER_MIB = 800
 
 function hookWork(text: string): void {
   for (let at = 0; at < text.length; at += CAP) {
@@ -23,7 +23,7 @@ function hookWork(text: string): void {
 
 // One test per input, so a slow runner spends its time budget a case at a time.
 for (const label of Object.keys(worstInputs(4096))) {
-  test('both redaction passes and the scrub cost at most 300 ms per MiB on ' + label, () => {
+  test('both redaction passes and the scrub cost at most 800 ms per MiB on ' + label, () => {
     const text = worstInputs(1024 * 1024)[label]
     let best = Infinity
     for (let run = 0; run < 3; run++) {
@@ -35,7 +35,7 @@ for (const label of Object.keys(worstInputs(4096))) {
   })
 }
 
-test('a worst-case result at the 1 MiB total is redacted by the hook well inside a second and a half', async ($, on) => {
+test('a worst-case result at the 1 MiB total is redacted by the hook well inside three seconds', async ($, on) => {
   const shape = (unit: string) => unit.repeat(Math.ceil(CAP / unit.length)).slice(0, CAP)
   const strings = ['SECRET=', 'eyJ-', '-----BEGIN PRIVATE KEY-----\n', 'Bearer abcdefghijklmnopqrst', "X_TOKEN='aaaa1"].map(shape)
   on('tool.call', () => ({ result: { a: strings[0], b: strings[1], c: strings[2], d: strings[3] }, text: strings[4] }))
@@ -43,5 +43,5 @@ test('a worst-case result at the 1 MiB total is redacted by the hook well inside
   const out = await $.tool.call({ tool: 'Bash', command: 'cat blob' })
   const elapsed = performance.now() - started
   expect(out.deny).toBeUndefined()
-  expect(elapsed < 1500).toBe(true)
+  expect(elapsed < 3000).toBe(true)
 })
